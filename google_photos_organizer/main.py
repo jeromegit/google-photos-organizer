@@ -10,6 +10,7 @@ from collections import defaultdict
 from urllib.parse import urlparse, unquote
 import re
 import sqlite3
+import argparse
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
@@ -422,6 +423,54 @@ class GooglePhotosOrganizer:
                 desc_text = f" - {description}" if description else ""
                 print(f"  - {filename} (Created: {creation_time}){desc_text}")
 
+    def create_indices(self):
+        """Create indices on the database tables for better query performance."""
+        if not self.conn:
+            self.init_database()
+            
+        cursor = self.conn.cursor()
+        try:
+            print("\nCreating database indices...")
+            
+            # Indices for photos table
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_photos_filename 
+                ON photos(filename)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_photos_creation_time 
+                ON photos(creation_time)
+            ''')
+            
+            # Indices for albums table
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_albums_title 
+                ON albums(title)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_albums_creation_time 
+                ON albums(creation_time)
+            ''')
+            
+            # Indices for album_photos table
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_album_photos_album_id 
+                ON album_photos(album_id)
+            ''')
+            cursor.execute('''
+                CREATE INDEX IF NOT EXISTS idx_album_photos_photo_id 
+                ON album_photos(photo_id)
+            ''')
+            
+            self.conn.commit()
+            print("Database indices created successfully")
+            return True
+            
+        except sqlite3.Error as e:
+            print(f"Error creating indices: {e}")
+            self.conn.rollback()
+            return False
+
 def format_metadata(metadata: dict) -> str:
     """Format metadata for display."""
     if not metadata:
@@ -437,19 +486,87 @@ def format_metadata(metadata: dict) -> str:
     
     return " | ".join(result)
 
+def parse_arguments():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(description='Google Photos Organizer')
+    parser.add_argument('--source-dir', default='/Users/jerome/SMUGMUG_ALL',
+                      help='Source directory for photos')
+    
+    # Create subparsers for different commands
+    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    
+    # Store photos command
+    photos_parser = subparsers.add_parser('photos', help='Store photos in database')
+    photos_parser.add_argument('--max-photos', type=int, default=100000,
+                           help='Maximum number of photos to store')
+    
+    # Store albums command
+    albums_parser = subparsers.add_parser('albums', help='Store albums in database')
+    
+    # Store album photos command
+    album_photos_parser = subparsers.add_parser('album-photos', 
+                                             help='Store album-photo relationships')
+    
+    # Print contents command
+    print_parser = subparsers.add_parser('print', help='Print album contents')
+    
+    # Create indices command
+    indices_parser = subparsers.add_parser('create-indices', 
+                                        help='Create database indices for better performance')
+    
+    # All command to run everything
+    all_parser = subparsers.add_parser('all', help='Run all operations')
+    all_parser.add_argument('--max-photos', type=int, default=100000,
+                         help='Maximum number of photos to store')
+    all_parser.add_argument('--create-indices', action='store_true',
+                         help='Create database indices after storing data')
+    
+    return parser.parse_args()
+
 def main():
+    # Parse command line arguments
+    args = parse_arguments()
+    
     # Initialize and authenticate
-    organizer = GooglePhotosOrganizer('/Users/jerome/SMUGMUG_ALL')
+    organizer = GooglePhotosOrganizer(args.source_dir)
     print("Authenticating with Google Photos...")
     organizer.authenticate()
-
-    # Store photos and albums in SQLite database
-    print("\nStoring photos and albums in database...")
-    organizer.store_photos_and_albums(100000)
-
-    # Print album contents from database
-    print("\nPrinting album contents from database...")
-    organizer.print_album_contents()
+    
+    if args.command == 'photos':
+        print(f"\nStoring up to {args.max_photos} photos in database...")
+        organizer.store_photos(args.max_photos)
+    
+    elif args.command == 'albums':
+        print("\nStoring albums in database...")
+        organizer.store_albums()
+    
+    elif args.command == 'album-photos':
+        print("\nStoring album-photo relationships...")
+        # First get albums
+        albums = organizer.store_albums()
+        if albums:
+            organizer.store_album_photos(albums)
+        else:
+            print("No albums found or error storing albums")
+    
+    elif args.command == 'print':
+        print("\nPrinting album contents from database...")
+        organizer.print_album_contents()
+    
+    elif args.command == 'create-indices':
+        print("\nCreating database indices...")
+        organizer.create_indices()
+    
+    elif args.command == 'all':
+        print("\nRunning all operations...")
+        organizer.store_photos_and_albums(args.max_photos)
+        if args.create_indices:
+            organizer.create_indices()
+        organizer.print_album_contents()
+    
+    else:
+        parser = argparse.ArgumentParser(description='Google Photos Organizer')
+        parser.print_help()
 
 if __name__ == '__main__':
     main()
