@@ -11,6 +11,10 @@ from urllib.parse import urlparse, unquote
 import re
 import sqlite3
 import argparse
+import hashlib
+import mimetypes
+from datetime import datetime
+from PIL import Image
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
@@ -471,6 +475,202 @@ class GooglePhotosOrganizer:
             self.conn.rollback()
             return False
 
+    def init_local_tables(self):
+        """Initialize SQLite tables for local files."""
+        if not self.conn:
+            self.init_database()
+            
+        cursor = self.conn.cursor()
+
+        # Create local photos table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS local_photos (
+                id TEXT PRIMARY KEY,
+                filename TEXT,
+                full_path TEXT,
+                creation_time TEXT,
+                mime_type TEXT,
+                size INTEGER,
+                width INTEGER,
+                height INTEGER
+            )
+        ''')
+
+        # Create local albums table (directories)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS local_albums (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                full_path TEXT,
+                creation_time TEXT,
+                media_item_count INTEGER
+            )
+        ''')
+
+        # Create local album_photos relationship table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS local_album_photos (
+                album_id TEXT,
+                photo_id TEXT,
+                FOREIGN KEY (album_id) REFERENCES local_albums(id),
+                FOREIGN KEY (photo_id) REFERENCES local_photos(id),
+                PRIMARY KEY (album_id, photo_id)
+            )
+        ''')
+
+        # Create indices
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_photos_filename ON local_photos(filename)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_photos_creation_time ON local_photos(creation_time)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_albums_title ON local_albums(title)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_albums_creation_time ON local_albums(creation_time)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_album_photos_album_id ON local_album_photos(album_id)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_album_photos_photo_id ON local_album_photos(photo_id)')
+
+        self.conn.commit()
+
+    def scan_local_directory(self):
+        """Scan local directory and store information in database."""
+        if not self.source_dir:
+            print("No source directory specified")
+            return False
+
+        if not os.path.exists(self.source_dir):
+            print(f"Source directory {self.source_dir} does not exist")
+            return False
+
+        self.init_local_tables()
+        cursor = self.conn.cursor()
+        photos_count = 0
+        albums_count = 0
+
+        try:
+            print(f"\nScanning directory: {self.source_dir}")
+            
+            # Walk through directory
+            for root, dirs, files in os.walk(self.source_dir):
+                # Check if directory contains any media files
+                media_files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.mp4', '.mov', '.avi'))]
+                if not media_files:
+                    continue
+                
+                # Create album (directory) entry
+                rel_path = os.path.relpath(root, self.source_dir)
+                if rel_path == '.':
+                    album_title = os.path.basename(self.source_dir)
+                else:
+                    album_title = rel_path.replace(os.sep, ' | ')
+                
+                album_id = hashlib.md5(root.encode()).hexdigest()
+                album_stat = os.stat(root)
+                
+                cursor.execute('''
+                    INSERT OR REPLACE INTO local_albums 
+                    (id, title, full_path, creation_time, media_item_count)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (
+                    album_id,
+                    album_title,
+                    root,
+                    datetime.fromtimestamp(album_stat.st_mtime).isoformat(),
+                    len(media_files)
+                ))
+                
+                albums_count += 1
+                if albums_count % 10 == 0:
+                    print(f"Processed {albums_count} directories with media")
+                
+                # Process media files
+                for file in media_files:
+                    file_path = os.path.join(root, file)
+                    file_stat = os.stat(file_path)
+                    photo_id = hashlib.md5(file_path.encode()).hexdigest()
+                    
+                    # Try to get image dimensions for images
+                    width = height = 0
+                    if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+                        try:
+                            with Image.open(file_path) as img:
+                                width, height = img.size
+                        except Exception as e:
+                            print(f"Could not read dimensions for {file_path}: {e}")
+                    
+                    # Store photo/video information
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO local_photos 
+                        (id, filename, full_path, creation_time, mime_type, size, width, height)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        photo_id,
+                        file,
+                        file_path,
+                        datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+                        mimetypes.guess_type(file_path)[0] or 'application/octet-stream',
+                        file_stat.st_size,
+                        width,
+                        height
+                    ))
+                    
+                    # Create album-photo relationship
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO local_album_photos 
+                        (album_id, photo_id) VALUES (?, ?)
+                    ''', (album_id, photo_id))
+                    
+                    photos_count += 1
+                    if photos_count % 100 == 0:
+                        print(f"Processed {photos_count} media files")
+                        self.conn.commit()
+                
+            self.conn.commit()
+            print(f"\nCompleted scanning local directory:")
+            print(f"- Processed {albums_count} directories with media")
+            print(f"- Processed {photos_count} media files")
+            return True
+            
+        except Exception as e:
+            print(f"Error scanning directory: {e}")
+            import traceback
+            traceback.print_exc()
+            self.conn.rollback()
+            return False
+
+    def print_local_album_contents(self):
+        """Print all local albums and their photos from the database."""
+        if not self.conn:
+            self.init_database()
+            
+        cursor = self.conn.cursor()
+        
+        # Get all albums with media
+        cursor.execute('''
+            SELECT a.id, a.title, COUNT(DISTINCT ap.photo_id) as actual_count
+            FROM local_albums a
+            JOIN local_album_photos ap ON a.id = ap.album_id
+            GROUP BY a.id, a.title
+            HAVING actual_count > 0
+            ORDER BY a.title
+        ''')
+        albums = cursor.fetchall()
+        
+        for album_id, album_title, count in albums:
+            print(f"\nAlbum: {album_title}")
+            print(f"Total media files: {count}")
+            
+            # Get photos in this album
+            cursor.execute('''
+                SELECT p.filename, p.creation_time, p.size, p.width, p.height, p.mime_type
+                FROM local_photos p
+                JOIN local_album_photos ap ON p.id = ap.photo_id
+                WHERE ap.album_id = ?
+                ORDER BY p.creation_time
+            ''', (album_id,))
+            
+            photos = cursor.fetchall()
+            for filename, creation_time, size, width, height, mime_type in photos:
+                size_mb = size / (1024 * 1024)
+                dimensions = f", Dimensions: {width}x{height}" if width and height else ""
+                print(f"  - {filename} (Created: {creation_time}, Size: {size_mb:.1f}MB{dimensions}, Type: {mime_type})")
+
 def format_metadata(metadata: dict) -> str:
     """Format metadata for display."""
     if not metadata:
@@ -514,12 +714,22 @@ def parse_arguments():
     indices_parser = subparsers.add_parser('create-indices', 
                                         help='Create database indices for better performance')
     
+    # Scan local directory command
+    local_parser = subparsers.add_parser('scan-local', 
+                                      help='Scan local directory and store in database')
+    
+    # Print local contents command
+    local_print_parser = subparsers.add_parser('print-local', 
+                                            help='Print local album contents')
+    
     # All command to run everything
     all_parser = subparsers.add_parser('all', help='Run all operations')
     all_parser.add_argument('--max-photos', type=int, default=100000,
                          help='Maximum number of photos to store')
     all_parser.add_argument('--create-indices', action='store_true',
                          help='Create database indices after storing data')
+    all_parser.add_argument('--scan-local', action='store_true',
+                         help='Also scan local directory')
     
     return parser.parse_args()
 
@@ -557,12 +767,24 @@ def main():
         print("\nCreating database indices...")
         organizer.create_indices()
     
+    elif args.command == 'scan-local':
+        print("\nScanning local directory...")
+        organizer.scan_local_directory()
+    
+    elif args.command == 'print-local':
+        print("\nPrinting local album contents...")
+        organizer.print_local_album_contents()
+    
     elif args.command == 'all':
         print("\nRunning all operations...")
         organizer.store_photos_and_albums(args.max_photos)
         if args.create_indices:
             organizer.create_indices()
+        if args.scan_local:
+            organizer.scan_local_directory()
         organizer.print_album_contents()
+        if args.scan_local:
+            organizer.print_local_album_contents()
     
     else:
         parser = argparse.ArgumentParser(description='Google Photos Organizer')

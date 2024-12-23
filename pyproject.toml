@@ -8,11 +8,10 @@ packages = [{include = "google_photos_organizer"}]
 
 [tool.poetry.dependencies]
 python = "^3.9"
-google-auth-oauthlib = "^1.2.1"
-google-auth-httplib2 = "^0.2.0"
-google-api-python-client = "^2.156.0"
-pillow = "^11.0.0"
-
+google-api-python-client = "^2.108.0"
+google-auth-oauthlib = "^1.1.0"
+google-auth-httplib2 = "^0.1.1"
+pillow = "^10.1.0"
 
 [build-system]
 requires = ["poetry-core"]
