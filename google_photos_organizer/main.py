@@ -10,7 +10,6 @@ from collections import defaultdict
 from urllib.parse import urlparse, unquote
 import re
 import argparse
-import hashlib
 import json
 import mimetypes
 from datetime import datetime
@@ -18,6 +17,12 @@ from PIL import Image
 from tabulate import tabulate
 import html
 from google_photos_organizer.database.db_manager import DatabaseManager
+from google_photos_organizer.utils import (
+    normalize_filename,
+    get_file_metadata,
+    get_image_dimensions,
+    calculate_file_hash
+)
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
@@ -61,26 +66,6 @@ class GooglePhotosOrganizer:
         # Try to find the original filename in the URL
         match = re.search(r'([^/]+)\.[^.]+$', path)
         return match.group(1) if match else path.split('/')[-1]
-
-    def normalize_filename(self, filename):
-        """Normalize filename by replacing non-alphanumeric chars with underscore and reducing consecutive underscores."""
-        # Get file extension
-        name, ext = os.path.splitext(filename)
-        
-        # Replace HTML entities like &#39; with underscore
-        name = re.sub(r'&[#\w]+;', '_', name)
-        
-        # Replace non-alphanumeric chars with underscore
-        normalized = re.sub(r'[^a-zA-Z0-9]', '_', name)
-        
-        # Replace multiple consecutive underscores with a single one
-        normalized = re.sub(r'_+', '_', normalized)
-        
-        # Remove leading/trailing underscores
-        normalized = normalized.strip('_')
-        
-        # Add back the extension
-        return normalized + ext.lower()
 
     def find_duplicates_in_google_photos(self) -> Dict[str, List[dict]]:
         """Find duplicate photos in Google Photos based on filename and metadata."""
@@ -302,7 +287,7 @@ class GooglePhotosOrganizer:
                     self.store_photo_metadata(
                         item['id'],
                         filename,
-                        self.normalize_filename(filename),
+                        normalize_filename(filename),
                         item.get('mimeType'),
                         creation_time,
                         width,
@@ -462,7 +447,7 @@ class GooglePhotosOrganizer:
                 else:
                     album_title = rel_path.replace(os.sep, ' | ')
                 
-                album_id = hashlib.md5(root.encode()).hexdigest()
+                album_id = calculate_file_hash(root)
                 album_stat = os.stat(root)
                 
                 self.store_local_album_metadata(
@@ -480,14 +465,13 @@ class GooglePhotosOrganizer:
                 for file in media_files:
                     file_path = os.path.join(root, file)
                     file_stat = os.stat(file_path)
-                    photo_id = hashlib.md5(file_path.encode()).hexdigest()
+                    photo_id = calculate_file_hash(file_path)
                     
                     # Try to get image dimensions for images
                     width = height = 0
                     if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
                         try:
-                            with Image.open(file_path) as img:
-                                width, height = img.size
+                            width, height = get_image_dimensions(file_path)
                         except Exception as e:
                             print(f"Could not read dimensions for {file_path}: {e}")
                     
@@ -495,7 +479,7 @@ class GooglePhotosOrganizer:
                     self.store_local_photo_metadata(
                         photo_id,
                         file,
-                        self.normalize_filename(file),
+                        normalize_filename(file),
                         file_path,
                         datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
                         width,
@@ -630,7 +614,7 @@ class GooglePhotosOrganizer:
             
         rows = []
         
-        normalized_pattern = self.normalize_filename(filename_pattern)
+        normalized_pattern = normalize_filename(filename_pattern)
         
         # Search local photos
         local_photos = self.db.search_local_photos(filename_pattern, normalized_pattern)
