@@ -42,3 +42,6 @@ client_secret.json
 credentials.json_OLD*
 *_secret*.json
 *_credentials*.json
+
+# History
+.history/
