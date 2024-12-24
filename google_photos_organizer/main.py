@@ -662,9 +662,9 @@ def parse_arguments():
     
     subparsers = parser.add_subparsers(dest='command', help='Commands')
 
-    # Initialize command
-    init_parser = subparsers.add_parser('init', help='Initialize the database')
-    init_parser.add_argument('--max-photos', type=int, default=100000, help='Maximum number of photos to process')
+    # Scan Google Photos command
+    scan_google_parser = subparsers.add_parser('scan-google', help='Scan Google Photos and store in database')
+    scan_google_parser.add_argument('--max-photos', type=int, default=100000, help='Maximum number of photos to process')
 
     # Compare command
     compare_parser = subparsers.add_parser('compare', help='Compare local photos with Google Photos')
@@ -678,7 +678,7 @@ def parse_arguments():
     scan_parser = subparsers.add_parser('scan-local', help='Scan local directory and store in database')
 
     # All command
-    all_parser = subparsers.add_parser('all', help='Initialize and compare')
+    all_parser = subparsers.add_parser('all', help='Scan both Google Photos and local directory, then compare')
     all_parser.add_argument('--max-photos', type=int, default=100000, help='Maximum number of photos to process')
     all_parser.add_argument('--album-filter', type=str, help='Filter albums by name (case-insensitive)')
 
@@ -688,7 +688,7 @@ def main():
     args = parse_arguments()
     organizer = GooglePhotosOrganizer(args.local_photos_dir, dry_run=args.dry_run)
 
-    if args.command == 'init':
+    if args.command == 'scan-google':
         organizer.authenticate()
         organizer.store_photos_and_albums(args.max_photos)
     elif args.command == 'scan-local':
