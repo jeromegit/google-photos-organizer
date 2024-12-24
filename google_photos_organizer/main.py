@@ -20,8 +20,7 @@ from google_photos_organizer.database.db_manager import DatabaseManager
 from google_photos_organizer.utils import (
     normalize_filename,
     get_file_metadata,
-    get_image_dimensions,
-    calculate_file_hash
+    get_image_dimensions
 )
 
 # If modifying these scopes, delete the file token.pickle.
@@ -447,7 +446,7 @@ class GooglePhotosOrganizer:
                 else:
                     album_title = rel_path.replace(os.sep, ' | ')
                 
-                album_id = calculate_file_hash(root)
+                album_id = rel_path
                 album_stat = os.stat(root)
                 
                 self.store_local_album_metadata(
@@ -464,8 +463,9 @@ class GooglePhotosOrganizer:
                 # Process media files
                 for file in media_files:
                     file_path = os.path.join(root, file)
+                    rel_file_path = os.path.relpath(file_path, self.source_dir)
                     file_stat = os.stat(file_path)
-                    photo_id = calculate_file_hash(file_path)
+                    photo_id = rel_file_path
                     
                     # Try to get image dimensions for images
                     width = height = 0

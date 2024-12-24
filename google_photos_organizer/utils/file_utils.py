@@ -1,6 +1,5 @@
 """File utilities for Google Photos Organizer."""
 
-import hashlib
 import logging
 import mimetypes
 import os
@@ -79,18 +78,3 @@ def get_image_dimensions(file_path: str) -> Tuple[int, int]:
     except (IOError, OSError) as e:
         logger.warning("Failed to get dimensions for %s: %s", file_path, str(e))
         return (0, 0)
-
-def calculate_file_hash(file_path: str) -> str:
-    """Calculate SHA-256 hash of a file.
-
-    Args:
-        file_path: Path to the file
-
-    Returns:
-        str: Hex string of file hash
-    """
-    sha256_hash = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for byte_block in iter(lambda: f.read(4096), b""):
-            sha256_hash.update(byte_block)
-    return sha256_hash.hexdigest()
