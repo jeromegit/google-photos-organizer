@@ -1,88 +1,167 @@
+# Standard library imports
+import argparse
+import hashlib
+import html
+import json
+import mimetypes
 import os
 import pickle
-from typing import Dict, List, Set
+import re
+import sqlite3
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Dict, List, Optional, Set, Tuple, Any
+
+# Third-party imports
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from collections import defaultdict
-from urllib.parse import urlparse, unquote
-import re
-import sqlite3
-import argparse
-import hashlib
-import json
-import mimetypes
-from datetime import datetime
 from PIL import Image
 from tabulate import tabulate
-import html
+from urllib.parse import urlparse, unquote
+
+# Custom exceptions
+class GooglePhotosError(Exception):
+    """Base exception for Google Photos operations."""
+    pass
+
+class AuthenticationError(GooglePhotosError):
+    """Raised when authentication fails."""
+    pass
+
+class ApiError(GooglePhotosError):
+    """Raised when API calls fail."""
+    pass
+
+# Data models
+@dataclass
+class MediaItem:
+    """Represents a media item in Google Photos."""
+    id: str
+    filename: str
+    mime_type: str
+    product_url: str
+    metadata: Dict[str, Any]
+    
+@dataclass
+class Album:
+    """Represents an album in Google Photos."""
+    id: str
+    title: str
+    media_items: List[MediaItem]
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
 
 class GooglePhotosOrganizer:
-    def __init__(self, source_dir: str):
+    """
+    A class to organize and manage Google Photos albums and media items.
+    
+    This class provides functionality to:
+    - Authenticate with Google Photos API
+    - Manage albums and media items
+    - Find duplicates
+    - Synchronize with local files
+    - Store data in SQLite database
+    
+    Attributes:
+        source_dir (str): Directory containing local photos
+        service: Google Photos API service object
+        duplicates (defaultdict): Dictionary tracking duplicate photos
+        conn (sqlite3.Connection): SQLite database connection
+    """
+    
+    def __init__(self, source_dir: str) -> None:
+        """
+        Initialize the GooglePhotosOrganizer.
+        
+        Args:
+            source_dir: Path to directory containing local photos
+        """
         self.source_dir = source_dir
         self.service = None
-        self.duplicates = defaultdict(list)
-        self.conn = None
+        self.duplicates: Dict[str, List[dict]] = defaultdict(list)
+        self.conn: Optional[sqlite3.Connection] = None
 
-    def authenticate(self):
-        """Authenticate with Google Photos API."""
-        creds = None
-        if os.path.exists('token.pickle'):
-            with open('token.pickle', 'rb') as token:
-                creds = pickle.load(token)
+    def authenticate(self) -> None:
+        """
+        Authenticate with Google Photos API.
         
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    'credentials.json', SCOPES)
-                creds = flow.run_local_server(port=0)
+        Raises:
+            AuthenticationError: If authentication fails
+        """
+        try:
+            creds = None
+            if os.path.exists('token.pickle'):
+                with open('token.pickle', 'rb') as token:
+                    creds = pickle.load(token)
             
-            with open('token.pickle', 'wb') as token:
-                pickle.dump(creds, token)
+            if not creds or not creds.valid:
+                if creds and creds.expired and creds.refresh_token:
+                    creds.refresh(Request())
+                else:
+                    if not os.path.exists('credentials.json'):
+                        raise AuthenticationError("credentials.json not found")
+                    flow = InstalledAppFlow.from_client_secrets_file(
+                        'credentials.json', SCOPES)
+                    creds = flow.run_local_server(port=0)
+                
+                with open('token.pickle', 'wb') as token:
+                    pickle.dump(creds, token)
 
-        self.service = build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
+            self.service = build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
+        except Exception as e:
+            raise AuthenticationError(f"Failed to authenticate: {str(e)}")
 
     def get_album_title(self, path: str) -> str:
-        """Convert directory path to album title using | as separator."""
+        """
+        Convert directory path to album title using | as separator.
+        
+        Args:
+            path: Directory path to convert
+            
+        Returns:
+            Album title derived from path
+        """
         relative_path = os.path.relpath(path, self.source_dir)
         return relative_path.replace(os.sep, '|')
 
     def extract_filename(self, url: str) -> str:
-        """Extract filename from Google Photos URL."""
+        """
+        Extract filename from Google Photos URL.
+        
+        Args:
+            url: Google Photos URL
+            
+        Returns:
+            Extracted filename
+        """
         parsed = urlparse(url)
         path = unquote(parsed.path)
-        # Try to find the original filename in the URL
         match = re.search(r'([^/]+)\.[^.]+$', path)
         return match.group(1) if match else path.split('/')[-1]
 
-    def normalize_filename(self, filename):
-        """Normalize filename by replacing non-alphanumeric chars with underscore and reducing consecutive underscores."""
-        # Get file extension
+    def normalize_filename(self, filename: str) -> str:
+        """
+        Normalize filename by replacing non-alphanumeric chars with underscore.
+        
+        Args:
+            filename: Original filename
+            
+        Returns:
+            Normalized filename
+        """
         name, ext = os.path.splitext(filename)
-        
-        # Replace HTML entities like &#39; with underscore
         name = re.sub(r'&[#\w]+;', '_', name)
-        
-        # Replace non-alphanumeric chars with underscore
         normalized = re.sub(r'[^a-zA-Z0-9]', '_', name)
-        
-        # Replace multiple consecutive underscores with a single one
         normalized = re.sub(r'_+', '_', normalized)
-        
-        # Remove leading/trailing underscores
         normalized = normalized.strip('_')
-        
-        # Add back the extension
         return normalized + ext.lower()
 
-    def find_duplicates_in_google_photos(self) -> Dict[str, List[dict]]:
+    def find_duplicates_in_google_photos(self) -> Dict[str, List[Dict[str, Any]]]:
         """Find duplicate photos in Google Photos based on filename and metadata."""
         print("Fetching all photos from Google Photos...")
         duplicates = defaultdict(list)
@@ -125,7 +204,7 @@ class GooglePhotosOrganizer:
         # Filter out non-duplicates
         return {k: v for k, v in duplicates.items() if len(v) > 1}
 
-    def list_albums_and_photos(self):
+    def list_albums_and_photos(self) -> Dict[str, List[MediaItem]]:
         """
         Retrieve all albums and their associated media items.
         
@@ -175,7 +254,7 @@ class GooglePhotosOrganizer:
         
         return albums_dict
 
-    def create_albums(self):
+    def create_albums(self) -> None:
         """Create albums in Google Photos based on directory structure."""
         for root, _, files in os.walk(self.source_dir):
             if files:  # Only create albums for directories containing files
@@ -200,320 +279,237 @@ class GooglePhotosOrganizer:
                 except HttpError as error:
                     print(f"Error creating album {album_title}: {error}")
 
-    def init_database(self):
-        """Initialize SQLite database."""
-        if self.conn:
-            return
-
-        self.conn = sqlite3.connect('photos.db')
-        cursor = self.conn.cursor()
-
-        # Create Google photos table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS google_photos (
-                id TEXT PRIMARY KEY,
-                filename TEXT,
-                normalized_filename TEXT,
-                description TEXT,
-                creation_time TEXT,
-                mime_type TEXT,
-                size INTEGER,
-                width INTEGER,
-                height INTEGER,
-                metadata TEXT
-            )
-        ''')
-
-        # Create Google albums table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS google_albums (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                description TEXT,
-                creation_time TEXT,
-                media_item_count INTEGER
-            )
-        ''')
-
-        # Create Google album_photos relationship table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS google_album_photos (
-                album_id TEXT,
-                photo_id TEXT,
-                FOREIGN KEY (album_id) REFERENCES google_albums(id),
-                FOREIGN KEY (photo_id) REFERENCES google_photos(id),
-                PRIMARY KEY (album_id, photo_id)
-            )
-        ''')
-
-        # Create local photos table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS local_photos (
-                id TEXT PRIMARY KEY,
-                filename TEXT,
-                normalized_filename TEXT,
-                full_path TEXT,
-                creation_time TEXT,
-                mime_type TEXT,
-                size INTEGER,
-                width INTEGER,
-                height INTEGER
-            )
-        ''')
-
-        # Create local albums table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS local_albums (
-                id TEXT PRIMARY KEY,
-                title TEXT,
-                full_path TEXT,
-                creation_time TEXT,
-                media_item_count INTEGER
-            )
-        ''')
-
-        # Create local album_photos relationship table
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS local_album_photos (
-                album_id TEXT,
-                photo_id TEXT,
-                FOREIGN KEY (album_id) REFERENCES local_albums(id),
-                FOREIGN KEY (photo_id) REFERENCES local_photos(id),
-                PRIMARY KEY (album_id, photo_id)
-            )
-        ''')
-
-        self.conn.commit()
-
-    def create_indices(self):
-        """Create indices for better query performance."""
-        if not self.conn:
-            self.init_database()
-
-        cursor = self.conn.cursor()
-        print("\nCreating indices...")
-
-        # Indices for Google Photos tables
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_photos_filename ON google_photos(filename)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_photos_normalized_filename ON google_photos(normalized_filename)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_photos_creation_time ON google_photos(creation_time)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_photos_mime_type ON google_photos(mime_type)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_photos_size ON google_photos(size)')
+    def init_database(self) -> None:
+        """
+        Initialize SQLite database with necessary tables.
         
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_albums_title ON google_albums(title)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_albums_creation_time ON google_albums(creation_time)')
+        Creates tables for photos, albums, and their relationships.
         
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_album_photos_album_id ON google_album_photos(album_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_album_photos_photo_id ON google_album_photos(photo_id)')
-
-        # Indices for Local Photos tables
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_photos_filename ON local_photos(filename)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_photos_normalized_filename ON local_photos(normalized_filename)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_photos_path ON local_photos(full_path)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_photos_creation_time ON local_photos(creation_time)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_photos_mime_type ON local_photos(mime_type)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_photos_size ON local_photos(size)')
-        
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_albums_title ON local_albums(title)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_albums_path ON local_albums(full_path)')
-        
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_album_photos_album_id ON local_album_photos(album_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_local_album_photos_photo_id ON local_album_photos(photo_id)')
-
-        self.conn.commit()
-        print("Indices created successfully")
-
-    def store_photos(self, max_photos=100000):
-        """Store photos in SQLite database."""
-        if not self.conn:
-            self.init_database()
-            
-        cursor = self.conn.cursor()
-        stored_count = 0
-        page_token = None
-        
+        Raises:
+            sqlite3.Error: If database operations fail
+        """
         try:
-            while True:
-                results = self.service.mediaItems().list(
-                    pageSize=100,
-                    pageToken=page_token
-                ).execute()
-                
-                items = results.get('mediaItems', [])
-                
-                for item in items:
-                    metadata = item.get('mediaMetadata', {})
-                    creation_time = metadata.get('creationTime')
-                    width = int(metadata.get('width', 0))
-                    height = int(metadata.get('height', 0))
-                    filename = item.get('filename')
-                    
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO google_photos 
-                        (id, filename, normalized_filename, description, creation_time, mime_type, size, width, height, metadata)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ''', (
-                        item['id'],
-                        filename,
-                        self.normalize_filename(filename),
-                        item.get('description'),
-                        creation_time,
-                        item.get('mimeType'),
-                        0,  # Size is not available in the API response
-                        width,
-                        height,
-                        json.dumps(metadata)
-                    ))
-                    
-                    stored_count += 1
-                    if stored_count % 100 == 0:
-                        print(f"Stored {stored_count} photos")
-                        self.conn.commit()
-                    
-                    if stored_count >= max_photos:
-                        break
-                
-                if stored_count >= max_photos:
-                    break
-                
-                page_token = results.get('nextPageToken')
-                if not page_token:
-                    break
+            self.conn = sqlite3.connect('photos.db')
+            cursor = self.conn.cursor()
+            
+            # Create photos table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS google_photos (
+                    id TEXT PRIMARY KEY,
+                    filename TEXT,
+                    mime_type TEXT,
+                    product_url TEXT,
+                    metadata TEXT
+                )
+            ''')
+            
+            # Create albums table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS google_albums (
+                    id TEXT PRIMARY KEY,
+                    title TEXT
+                )
+            ''')
+            
+            # Create album_photos relationship table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS google_album_photos (
+                    album_id TEXT,
+                    photo_id TEXT,
+                    FOREIGN KEY (album_id) REFERENCES google_albums (id),
+                    FOREIGN KEY (photo_id) REFERENCES google_photos (id),
+                    PRIMARY KEY (album_id, photo_id)
+                )
+            ''')
             
             self.conn.commit()
-            print(f"Successfully stored {stored_count} photos")
-            return True
+        except sqlite3.Error as e:
+            if self.conn:
+                self.conn.rollback()
+            raise ApiError(f"Database initialization failed: {str(e)}")
+
+    def create_indices(self) -> None:
+        """
+        Create database indices for better query performance.
+        
+        Raises:
+            sqlite3.Error: If index creation fails
+        """
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_photos_filename ON google_photos(filename)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_albums_title ON google_albums(title)')
+            cursor.execute('CREATE INDEX IF NOT EXISTS idx_google_album_photos_photo ON google_album_photos(photo_id)')
+            self.conn.commit()
+        except sqlite3.Error as e:
+            if self.conn:
+                self.conn.rollback()
+            raise ApiError(f"Index creation failed: {str(e)}")
+
+    def store_photos(self, max_photos: int = 100000) -> None:
+        """
+        Store photos in SQLite database.
+        
+        Args:
+            max_photos: Maximum number of photos to store
+            
+        Raises:
+            ApiError: If photo storage fails
+        """
+        try:
+            cursor = self.conn.cursor()
+            page_token = None
+            photo_count = 0
+            
+            while photo_count < max_photos:
+                request_body = {
+                    'pageSize': 100,
+                    'pageToken': page_token
+                }
+                
+                try:
+                    response = self.service.mediaItems().list(**request_body).execute()
+                except HttpError as e:
+                    raise ApiError(f"Failed to fetch media items: {str(e)}")
+                
+                if not response:
+                    break
+                    
+                media_items = response.get('mediaItems', [])
+                for item in media_items:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO google_photos (id, filename, mime_type, product_url, metadata)
+                        VALUES (?, ?, ?, ?, ?)
+                    ''', (
+                        item['id'],
+                        item['filename'],
+                        item.get('mimeType', ''),
+                        item.get('productUrl', ''),
+                        json.dumps(item.get('mediaMetadata', {}))
+                    ))
+                    photo_count += 1
+                
+                page_token = response.get('nextPageToken')
+                if not page_token:
+                    break
+                    
+            self.conn.commit()
+            print(f"Stored {photo_count} photos in database")
             
         except Exception as e:
-            print(f"Error storing photos: {e}")
-            import traceback
-            traceback.print_exc()
-            self.conn.rollback()
-            return False
+            if self.conn:
+                self.conn.rollback()
+            raise ApiError(f"Failed to store photos: {str(e)}")
 
-    def store_albums(self):
-        """Store albums in SQLite database."""
-        if not self.conn:
-            self.init_database()
-            
-        cursor = self.conn.cursor()
+    def store_albums(self) -> None:
+        """
+        Store albums in SQLite database.
+        
+        Raises:
+            ApiError: If album storage fails
+        """
         try:
-            print("\nFetching albums...")
+            cursor = self.conn.cursor()
             albums_request = self.service.albums().list(pageSize=50)
-            albums_response = albums_request.execute()
-            albums = albums_response.get('albums', [])
             
-            for i, album in enumerate(albums, 1):
-                cursor.execute('''
-                    INSERT OR REPLACE INTO google_albums 
-                    (id, title, description, creation_time, media_item_count)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (
-                    album['id'],
-                    album.get('title', 'Untitled Album'),
-                    album.get('description', ''),
-                    album.get('creationTime', ''),
-                    album.get('mediaItemsCount', 0)
-                ))
+            while albums_request:
+                try:
+                    albums_response = albums_request.execute()
+                except HttpError as e:
+                    raise ApiError(f"Failed to fetch albums: {str(e)}")
+                    
+                albums = albums_response.get('albums', [])
+                for album in albums:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO google_albums (id, title)
+                        VALUES (?, ?)
+                    ''', (album['id'], album.get('title', 'Untitled Album')))
                 
-                print(f"Albums progress: {i}/{len(albums)}")
-                self.conn.commit()
+                albums_request = self.service.albums().list_next(
+                    albums_request, albums_response)
+                    
+            self.conn.commit()
             
-            print(f"Total albums stored: {len(albums)}")
-            return albums
-
         except Exception as e:
-            print(f"Error storing albums: {e}")
-            self.conn.rollback()
-            return []
+            if self.conn:
+                self.conn.rollback()
+            raise ApiError(f"Failed to store albums: {str(e)}")
 
-    def store_album_photos(self, albums):
-        """Store album-photo relationships in SQLite database."""
-        if not self.conn:
-            self.init_database()
+    def store_album_photos(self, albums: Dict[str, List[MediaItem]]) -> None:
+        """
+        Store album-photo relationships in SQLite database.
+        
+        Args:
+            albums: Dictionary mapping album IDs to lists of media items
             
-        cursor = self.conn.cursor()
+        Raises:
+            ApiError: If relationship storage fails
+        """
         try:
-            print("\nFetching album photos...")
-            for i, album in enumerate(albums, 1):
-                next_page_token = None
-                photos_in_album = 0
-                
-                while True:
-                    media_request = self.service.mediaItems().search(
-                        body={'albumId': album['id'], 'pageToken': next_page_token}
-                    )
-                    media_response = media_request.execute()
-                    
-                    media_items = media_response.get('mediaItems', [])
-                    if not media_items:
-                        break
-                        
-                    for media_item in media_items:
-                        cursor.execute('''
-                            INSERT OR REPLACE INTO google_album_photos 
-                            (album_id, photo_id) VALUES (?, ?)
-                        ''', (album['id'], media_item['id']))
-                        photos_in_album += 1
-                    
-                    next_page_token = media_response.get('nextPageToken')
-                    if not next_page_token:
-                        break
-                
-                print(f"Album {i}/{len(albums)}: {album.get('title', 'Untitled')} - {photos_in_album} photos")
-                self.conn.commit()
+            cursor = self.conn.cursor()
+            cursor.execute('DELETE FROM google_album_photos')  # Clear existing relationships
             
-            return True
+            for album_id, media_items in albums.items():
+                for item in media_items:
+                    cursor.execute('''
+                        INSERT INTO google_album_photos (album_id, photo_id)
+                        VALUES (?, ?)
+                    ''', (album_id, item.id))
+                    
+            self.conn.commit()
+            
+        except sqlite3.Error as e:
+            if self.conn:
+                self.conn.rollback()
+            raise ApiError(f"Failed to store album-photo relationships: {str(e)}")
 
-        except Exception as e:
-            print(f"Error storing album photos: {e}")
-            self.conn.rollback()
-            return False
-
-    def store_photos_and_albums(self, max_photos=100000):
-        """Store photos and albums in SQLite database."""
+    def store_photos_and_albums(self, max_photos: int = 100000) -> None:
+        """
+        Store both photos and albums in SQLite database.
+        
+        Args:
+            max_photos: Maximum number of photos to store
+            
+        Raises:
+            ApiError: If storage operations fail
+        """
         self.init_database()
-        
-        # Step 1: Store photos
-        if self.store_photos(max_photos):
-            # Step 2: Store albums and their photos
-            albums = self.store_albums()
-            if albums:
-                self.store_album_photos(albums)
-                # Step 3: Create indices after all data is loaded
-                self.create_indices()
-                return True
-        return False
+        self.create_indices()
+        self.store_photos(max_photos)
+        self.store_albums()
+        albums = self.list_albums_and_photos()
+        self.store_album_photos(albums)
 
-    def print_album_contents(self):
-        """Print all albums and their photos from the database."""
-        cursor = self.conn.cursor()
+    def print_album_contents(self) -> None:
+        """
+        Print all albums and their photos from the database.
         
-        # Get all albums
-        cursor.execute('''
-            SELECT id, title FROM google_albums
-        ''')
-        albums = cursor.fetchall()
-        
-        for album_id, album_title in albums:
-            print(f"\nAlbum: {album_title}")
-            
-            # Get photos in this album
+        Raises:
+            ApiError: If query fails
+        """
+        try:
+            cursor = self.conn.cursor()
             cursor.execute('''
-                SELECT p.filename, p.creation_time, p.description
-                FROM google_photos p
-                JOIN google_album_photos ap ON p.id = ap.photo_id
-                WHERE ap.album_id = ?
-            ''', (album_id,))
+                SELECT a.title, p.filename
+                FROM google_albums a
+                JOIN google_album_photos ap ON a.id = ap.album_id
+                JOIN google_photos p ON ap.photo_id = p.id
+                ORDER BY a.title, p.filename
+            ''')
             
-            photos = cursor.fetchall()
-            print(f"Total photos: {len(photos)}")
-            
-            for filename, creation_time, description in photos:
-                desc_text = f" - {description}" if description else ""
-                print(f"  - {filename} (Created: {creation_time}){desc_text}")
+            current_album = None
+            for title, filename in cursor.fetchall():
+                if title != current_album:
+                    if current_album is not None:
+                        print()
+                    print(f"\nAlbum: {title}")
+                    current_album = title
+                print(f"  - {filename}")
+                
+        except sqlite3.Error as e:
+            raise ApiError(f"Failed to print album contents: {str(e)}")
 
-    def init_local_tables(self):
+    def init_local_tables(self) -> None:
         """Initialize SQLite tables for local files."""
         if not self.conn:
             self.init_database()
@@ -568,7 +564,7 @@ class GooglePhotosOrganizer:
 
         self.conn.commit()
 
-    def scan_local_directory(self):
+    def scan_local_directory(self) -> None:
         """Scan local directory and store information in database."""
         if not self.source_dir:
             print("No source directory specified")
@@ -675,7 +671,7 @@ class GooglePhotosOrganizer:
             self.conn.rollback()
             return False
 
-    def print_local_album_contents(self):
+    def print_local_album_contents(self) -> None:
         """Print all local albums and their photos from the database."""
         if not self.conn:
             self.init_database()
@@ -712,7 +708,7 @@ class GooglePhotosOrganizer:
                 dimensions = f", Dimensions: {width}x{height}" if width and height else ""
                 print(f"  - {filename} (Created: {creation_time}, Size: {size_mb:.1f}MB{dimensions}, Type: {mime_type})")
 
-    def compare_with_google_photos(self, album_filter=None):
+    def compare_with_google_photos(self, album_filter: Optional[str] = None) -> None:
         """Compare local albums and photos with Google Photos data."""
         if not self.conn:
             self.init_database()
@@ -856,7 +852,7 @@ class GooglePhotosOrganizer:
                         for filename, width, height in existing_album_files:
                             print(f"  - {filename} (Dimensions: {width}x{height})")
 
-    def search_files(self, filename_pattern):
+    def search_files(self, filename_pattern: str) -> List[Dict[str, Any]]:
         """Search for files in both local and Google Photos databases."""
         if not self.conn:
             self.init_database()
@@ -902,6 +898,57 @@ class GooglePhotosOrganizer:
             print(f"\nTotal files found: {len(rows)}")
         else:
             print(f"No files found containing '{filename_pattern}'")
+
+    def get_file_metadata(self, filepath: str) -> Dict[str, Any]:
+        """
+        Get metadata for a local file.
+        
+        Args:
+            filepath: Path to the file
+            
+        Returns:
+            Dictionary containing file metadata
+        """
+        file_stat = os.stat(filepath)
+        metadata = {
+            'creation_time': datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+            'size': file_stat.st_size,
+            'mime_type': mimetypes.guess_type(filepath)[0] or 'application/octet-stream'
+        }
+        return metadata
+
+    def get_image_dimensions(self, filepath: str) -> Tuple[int, int]:
+        """
+        Get dimensions of an image file.
+        
+        Args:
+            filepath: Path to the image file
+            
+        Returns:
+            Tuple of (width, height)
+        """
+        try:
+            with Image.open(filepath) as img:
+                return img.size
+        except Exception as e:
+            print(f"Could not read dimensions for {filepath}: {e}")
+            return (0, 0)
+
+    def calculate_file_hash(self, filepath: str) -> str:
+        """
+        Calculate SHA-256 hash of a file.
+        
+        Args:
+            filepath: Path to the file
+            
+        Returns:
+            Hex string of file hash
+        """
+        hash = hashlib.sha256()
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash.update(chunk)
+        return hash.hexdigest()
 
 def parse_arguments():
     """Parse command line arguments."""
