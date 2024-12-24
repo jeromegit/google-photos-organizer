@@ -5,7 +5,6 @@ import mimetypes
 import os
 import re
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, Optional, Tuple, Any
 
 from PIL import Image
@@ -37,11 +36,10 @@ def get_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
         Dictionary containing file metadata, or None if file is not an image
     """
     try:
-        path = Path(file_path)
-        if not path.is_file():
+        if not os.path.isfile(file_path):
             return None
 
-        stat = path.stat()
+        stat = os.stat(file_path)
         creation_time = datetime.fromtimestamp(stat.st_ctime)
 
         mime_type, _ = mimetypes.guess_type(file_path)

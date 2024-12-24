@@ -45,3 +45,4 @@ credentials.json_OLD*
 
 # History
 .history/
+.coverage
