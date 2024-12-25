@@ -1,8 +1,14 @@
 """Database operations for Google Photos Organizer."""
 
 import sqlite3
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple, Any
+
+from google_photos_organizer.database.models import (
+    AlbumData,
+    PhotoData,
+    LocalAlbumData,
+    LocalPhotoData
+)
 
 
 class DatabaseError(Exception):
@@ -155,13 +161,6 @@ class DatabaseManager:
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to initialize local tables: {e}") from e
 
-    @dataclass
-    class AlbumData:
-        """Data class for album information."""
-        id: str
-        title: str
-        creation_time: str
-
     def store_album(self, album_data: AlbumData) -> None:
         """Store album data in database.
 
@@ -179,18 +178,6 @@ class DatabaseManager:
             self._commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to store album: {e}") from e
-
-    @dataclass
-    class PhotoData:
-        """Data class for photo information."""
-        id: str
-        filename: str
-        normalized_filename: str
-        mime_type: str
-        creation_time: str
-        width: int
-        height: int
-        product_url: str
 
     def store_photo(self, photo_data: PhotoData) -> None:
         """Store photo data in database.
@@ -241,14 +228,6 @@ class DatabaseManager:
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to store album-photo relationship: {e}") from e
 
-    @dataclass
-    class LocalAlbumData:
-        """Data class for local album information."""
-        id: str
-        title: str
-        full_path: str
-        creation_time: str
-
     def store_local_album(self, album_data: LocalAlbumData) -> None:
         """Store local album data in database.
 
@@ -273,19 +252,6 @@ class DatabaseManager:
             self._commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to store local album: {e}") from e
-
-    @dataclass
-    class LocalPhotoData:
-        """Data class for local photo information."""
-        id: str
-        filename: str
-        normalized_filename: str
-        full_path: str
-        creation_time: str
-        mime_type: str
-        size: int
-        width: int
-        height: int
 
     def store_local_photo(self, photo_data: LocalPhotoData) -> None:
         """Store local photo data in database.
