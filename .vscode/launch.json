@@ -21,7 +21,7 @@
             "program": "${workspaceFolder}/google_photos_organizer/main.py",
             "args": ["scan-google", "--max-photos", "1000"],
             "console": "integratedTerminal",
-            "justMyCode": false,
+            "justMyCode": true,
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }

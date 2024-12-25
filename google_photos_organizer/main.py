@@ -1,4 +1,3 @@
-import os
 import pickle
 import re
 import argparse
@@ -15,6 +14,8 @@ from googleapiclient.errors import HttpError
 from tabulate import tabulate
 
 from google_photos_organizer.database.db_manager import DatabaseManager
+from google_photos_organizer.database.models import GooglePhotoData, GoogleAlbumData
+from google_photos_organizer.utils.file_utils import normalize_filename
 import logging
 
 logger = logging.getLogger(__name__)
@@ -198,7 +199,7 @@ class GooglePhotosOrganizer:
                            mime_type: str, creation_time: str, width: int, height: int, 
                            product_url: str):
         """Store photo metadata in the database."""
-        photo_data = self.db.PhotoData(
+        photo_data = GooglePhotoData(
             id=photo_id,
             filename=filename,
             normalized_filename=normalized_filename,
@@ -212,7 +213,7 @@ class GooglePhotosOrganizer:
 
     def store_album_metadata(self, album_id: str, title: str, creation_time: str):
         """Store album metadata in the database."""
-        album_data = self.db.AlbumData(
+        album_data = GoogleAlbumData(
             id=album_id,
             title=title,
             creation_time=creation_time

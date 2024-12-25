@@ -16,7 +16,7 @@ class BasePhotoData:
 
 
 @dataclass
-class PhotoData(BasePhotoData):
+class GooglePhotoData(BasePhotoData):
     """Data class for Google Photos information."""
     product_url: str
 
@@ -29,8 +29,8 @@ class LocalPhotoData(BasePhotoData):
 
 
 @dataclass
-class AlbumData:
-    """Data class for album information."""
+class GoogleAlbumData:
+    """Data class for Google Photos album information."""
     id: str
     title: str
     creation_time: str

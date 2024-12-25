@@ -4,8 +4,8 @@ import sqlite3
 from typing import Dict, List, Optional, Tuple, Any
 
 from google_photos_organizer.database.models import (
-    AlbumData,
-    PhotoData,
+    GoogleAlbumData,
+    GooglePhotoData,
     LocalAlbumData,
     LocalPhotoData
 )
@@ -115,53 +115,91 @@ class DatabaseManager:
             raise DatabaseError(f"Failed to initialize database: {e}") from e
 
     def init_local_tables(self) -> None:
-        """Initialize database tables for local files."""
-        if not self.conn or not self.cursor:
-            self.connect()
-
+        """Initialize tables for local photo data."""
         try:
-            # Create local_albums table
-            self._execute('''
-                CREATE TABLE IF NOT EXISTS local_albums (
-                    id TEXT PRIMARY KEY,
-                    title TEXT,
-                    full_path TEXT,
-                    creation_time TEXT,
-                    media_item_count INTEGER
-                )
-            ''')
+            if self.dry_run:
+                print("Would create local tables")
+                return
 
-            # Create local_photos table
-            self._execute('''
+            self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS local_photos (
                     id TEXT PRIMARY KEY,
-                    filename TEXT,
-                    normalized_filename TEXT,
-                    full_path TEXT,
-                    creation_time TEXT,
+                    filename TEXT NOT NULL,
+                    normalized_filename TEXT NOT NULL,
+                    full_path TEXT NOT NULL,
+                    creation_time TEXT NOT NULL,
                     mime_type TEXT,
-                    size INTEGER,
                     width INTEGER,
-                    height INTEGER
+                    height INTEGER,
+                    size INTEGER
                 )
-            ''')
+            """)
 
-            # Create local_album_photos table
-            self._execute('''
+            self.cursor.execute("""
+                CREATE TABLE IF NOT EXISTS local_albums (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    full_path TEXT NOT NULL,
+                    creation_time TEXT NOT NULL
+                )
+            """)
+
+            self.cursor.execute("""
                 CREATE TABLE IF NOT EXISTS local_album_photos (
-                    album_id TEXT,
-                    photo_id TEXT,
-                    FOREIGN KEY (album_id) REFERENCES local_albums (id),
-                    FOREIGN KEY (photo_id) REFERENCES local_photos (id),
-                    PRIMARY KEY (album_id, photo_id)
+                    album_id TEXT NOT NULL,
+                    photo_id TEXT NOT NULL,
+                    PRIMARY KEY (album_id, photo_id),
+                    FOREIGN KEY (album_id) REFERENCES local_albums(id),
+                    FOREIGN KEY (photo_id) REFERENCES local_photos(id)
                 )
-            ''')
+            """)
 
-            self._commit()
+            self.conn.commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to initialize local tables: {e}") from e
 
-    def store_album(self, album_data: AlbumData) -> None:
+    def create_indices(self) -> None:
+        """Create indices for better query performance."""
+        try:
+            if self.dry_run:
+                print("Would create indices")
+                return
+
+            # Indices for photos table
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_photos_filename 
+                ON photos(filename)
+            """)
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_photos_normalized_filename 
+                ON photos(normalized_filename)
+            """)
+
+            # Indices for local_photos table
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_local_photos_filename 
+                ON local_photos(filename)
+            """)
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_local_photos_normalized_filename 
+                ON local_photos(normalized_filename)
+            """)
+
+            # Indices for albums and local_albums
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_albums_title 
+                ON albums(title)
+            """)
+            self.cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_local_albums_title 
+                ON local_albums(title)
+            """)
+
+            self.conn.commit()
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to create indices: {e}") from e
+
+    def store_album(self, album_data: GoogleAlbumData) -> None:
         """Store album data in database.
 
         Args:
@@ -179,7 +217,7 @@ class DatabaseManager:
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to store album: {e}") from e
 
-    def store_photo(self, photo_data: PhotoData) -> None:
+    def store_photo(self, photo_data: GooglePhotoData) -> None:
         """Store photo data in database.
 
         Args:
