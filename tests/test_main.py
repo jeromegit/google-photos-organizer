@@ -1,8 +1,6 @@
 """Test module for main.py functionality."""
 import pytest
-import sys
 from unittest.mock import patch
-from io import StringIO
 from google_photos_organizer.main import parse_arguments
 
 

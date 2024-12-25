@@ -1,27 +1,29 @@
 import os
 import pickle
-from typing import Dict, List, Set
+import re
+import argparse
+import mimetypes
+from collections import defaultdict
+from datetime import datetime
+from typing import Dict, List
+from urllib.parse import urlparse, unquote
+
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from collections import defaultdict
-from urllib.parse import urlparse, unquote
-import re
-import argparse
-import json
-import mimetypes
-from datetime import datetime
-from PIL import Image
 from tabulate import tabulate
-import html
+
 from google_photos_organizer.database.db_manager import DatabaseManager
 from google_photos_organizer.utils import (
     normalize_filename,
     get_file_metadata,
     get_image_dimensions
 )
+import logging
+
+logger = logging.getLogger(__name__)
 
 # If modifying these scopes, delete the file token.pickle.
 SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
@@ -229,7 +231,14 @@ class GooglePhotosOrganizer:
 
     def store_local_album_metadata(self, album_id: str, title: str, directory_path: str, 
                                  creation_time: str):
-        """Store local album metadata in the database."""
+        """Store local album metadata in the database.
+
+        Args:
+            album_id: Unique identifier for the album
+            title: Album title
+            directory_path: Path to the album directory
+            creation_time: Album creation/modification time
+        """
         album_data = self.db.LocalAlbumData(
             id=album_id,
             title=title,
@@ -248,7 +257,7 @@ class GooglePhotosOrganizer:
             normalized_filename=normalized_filename,
             full_path=file_path,
             creation_time=creation_time,
-            mime_type=mime_type or 'application/octet-stream',
+            mime_type=mime_type or '',
             size=size,
             width=width,
             height=height
@@ -415,95 +424,164 @@ class GooglePhotosOrganizer:
                 desc_text = f" - {description}" if description else ""
                 print(f"  - {filename} (Created: {creation_time}){desc_text}")
 
-    def scan_local_directory(self):
-        """Scan local directory and store information in database."""
+    def _validate_source_directory(self) -> bool:
+        """
+        Validate that the source directory exists and is accessible.
+
+        Returns:
+            bool: True if directory is valid, False otherwise
+        """
         if not self.source_dir:
-            print("No source directory specified")
+            logger.error("No source directory specified")
             return False
 
         if not os.path.exists(self.source_dir):
-            print(f"Source directory {self.source_dir} does not exist")
+            logger.error(f"Source directory {self.source_dir} does not exist")
             return False
 
-        self.init_db()
-        photos_count = 0
-        albums_count = 0
+        return True
 
+    def _process_media_file(
+        self, 
+        file_path: str, 
+        album_id: str,
+        source_dir: str
+    ) -> bool:
+        """
+        Process a single media file and store its metadata.
+
+        Args:
+            file_path: Full path to the media file
+            album_id: ID of the album containing this file
+            source_dir: Root source directory for relative path calculation
+
+        Returns:
+            bool: True if processing succeeded, False otherwise
+        """
         try:
-            print(f"\nScanning directory: {self.source_dir}")
+            file = os.path.basename(file_path)
+            rel_file_path = os.path.relpath(file_path, source_dir)
+            file_stat = os.stat(file_path)
+            photo_id = rel_file_path
             
-            # Walk through directory
-            for root, dirs, files in os.walk(self.source_dir):
-                # Check if directory contains any media files
-                media_files = [f for f in files if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.mp4', '.mov', '.avi'))]
-                if not media_files:
-                    continue
-                
-                # Create album (directory) entry
-                rel_path = os.path.relpath(root, self.source_dir)
-                if rel_path == '.':
-                    album_title = os.path.basename(self.source_dir)
-                else:
-                    album_title = rel_path.replace(os.sep, ' | ')
-                
-                album_id = rel_path
-                album_stat = os.stat(root)
-                
-                self.store_local_album_metadata(
-                    album_id,
-                    album_title,
-                    root,
-                    datetime.fromtimestamp(album_stat.st_mtime).isoformat()
-                )
-                
-                albums_count += 1
-                if albums_count % 10 == 0:
-                    print(f"Processed {albums_count} directories with media")
-                
-                # Process media files
-                for file in media_files:
-                    file_path = os.path.join(root, file)
-                    rel_file_path = os.path.relpath(file_path, self.source_dir)
-                    file_stat = os.stat(file_path)
-                    photo_id = rel_file_path
-                    
-                    # Try to get image dimensions for images
-                    width = height = 0
-                    if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
-                        try:
-                            width, height = get_image_dimensions(file_path)
-                        except Exception as e:
-                            print(f"Could not read dimensions for {file_path}: {e}")
-                    
-                    # Store photo/video information
-                    self.store_local_photo_metadata(
-                        photo_id,
-                        file,
-                        normalize_filename(file),
-                        file_path,
-                        datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
-                        width,
-                        height,
-                        mimetypes.guess_type(file)[0],
-                        file_stat.st_size
-                    )
-                    
-                    # Create album-photo relationship
-                    self.store_local_album_photo_relation(album_id, photo_id)
-                    
-                    photos_count += 1
-                    if photos_count % 100 == 0:
-                        print(f"Processed {photos_count} media files")
+            width = height = 0
+            if file.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+                try:
+                    width, height = get_image_dimensions(file_path)
+                except Exception as e:
+                    logger.warning(f"Failed to get dimensions for {file_path}: {e}")
+
+            self.store_local_photo_metadata(
+                photo_id=photo_id,
+                filename=file,
+                normalized_filename=normalize_filename(file),
+                file_path=file_path,
+                creation_time=datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+                width=width,
+                height=height,
+                mime_type=mimetypes.guess_type(file)[0],
+                size=file_stat.st_size
+            )
             
-            print(f"\nCompleted scanning local directory:")
-            print(f"- Processed {albums_count} directories with media")
-            print(f"- Processed {photos_count} media files")
+            self.store_local_album_photo_relation(album_id, photo_id)
             return True
             
         except Exception as e:
-            print(f"Error scanning directory: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"Error processing file {file_path}: {e}")
+            return False
+
+    def _process_directory(
+        self, 
+        root: str, 
+        files: list[str],
+        source_dir: str
+    ) -> tuple[int, int]:
+        """
+        Process a directory and its media files.
+
+        Args:
+            root: Directory path being processed
+            files: List of files in the directory
+            source_dir: Root source directory for relative path calculation
+
+        Returns:
+            tuple[int, int]: Count of (processed_files, failed_files)
+        """
+        media_files = [
+            f for f in files 
+            if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp', '.mp4', '.mov', '.avi'))
+        ]
+        if not media_files:
+            return 0, 0
+
+        # Create album entry
+        rel_path = os.path.relpath(root, source_dir)
+        album_title = os.path.basename(source_dir) if rel_path == '.' else rel_path.replace(os.sep, ' | ')
+        album_id = rel_path
+        album_stat = os.stat(root)
+
+        self.store_local_album_metadata(
+            album_id=album_id,
+            title=album_title,
+            directory_path=root,
+            creation_time=datetime.fromtimestamp(album_stat.st_mtime).isoformat()
+        )
+
+        processed_files = failed_files = 0
+        for file in media_files:
+            file_path = os.path.join(root, file)
+            if self._process_media_file(file_path, album_id, source_dir):
+                processed_files += 1
+            else:
+                failed_files += 1
+
+        return processed_files, failed_files
+
+    def scan_local_directory(self) -> bool:
+        """
+        Scan local directory and store media information in database.
+        
+        This method walks through the source directory, identifying media files
+        and organizing them into albums based on their directory structure.
+        
+        Returns:
+            bool: True if scan completed successfully, False otherwise
+        
+        Raises:
+            OSError: If there are filesystem-related errors
+            Exception: For other unexpected errors
+        """
+        if not self._validate_source_directory():
+            return False
+
+        try:
+            self.init_db()
+            total_photos = total_albums = failed_files = 0
+            logger.info(f"Scanning directory: {self.source_dir}")
+
+            for root, _, files in os.walk(self.source_dir):
+                processed_files, failed = self._process_directory(root, files, self.source_dir)
+                
+                if processed_files > 0:
+                    total_albums += 1
+                    total_photos += processed_files
+                    failed_files += failed
+
+                    if total_albums % 10 == 0:
+                        logger.info(f"Processed {total_albums} directories with media")
+                    if total_photos % 100 == 0:
+                        logger.info(f"Processed {total_photos} media files")
+
+            logger.info("\nCompleted scanning local directory:")
+            logger.info(f"- Processed {total_albums} directories with media")
+            logger.info(f"- Successfully processed {total_photos} media files")
+            if failed_files > 0:
+                logger.warning(f"- Failed to process {failed_files} files")
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Error scanning directory: {e}", exc_info=True)
             return False
 
     def print_local_album_contents(self):
