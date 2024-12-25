@@ -1,0 +1,42 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "Python: Poetry Debug Main",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "google_photos_organizer.main",
+            "console": "integratedTerminal",
+            "python.pythonPath": "${workspaceFolder}/.venv/bin/python",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "justMyCode": true
+        },
+        {
+            "name": "Python: Scan Google",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/google_photos_organizer/main.py",
+            "args": ["scan-google", "--max-photos", "1000"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },  
+        {
+            "name": "Python: Compare with Filter",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/google_photos_organizer/main.py",
+            "args": ["compare", "--album-filter", "Bonna"],
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        }  
+    ]
+}
