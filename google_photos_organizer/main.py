@@ -9,18 +9,12 @@ from typing import Dict, List
 from urllib.parse import urlparse, unquote
 
 from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from tabulate import tabulate
 
 from google_photos_organizer.database.db_manager import DatabaseManager
-from google_photos_organizer.utils import (
-    normalize_filename,
-    get_file_metadata,
-    get_image_dimensions
-)
 import logging
 
 logger = logging.getLogger(__name__)

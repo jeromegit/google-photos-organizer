@@ -1,11 +1,7 @@
 """Tests for file utilities."""
 
-import os
 from datetime import datetime
-from unittest.mock import patch, mock_open, MagicMock
-
-import pytest
-from PIL import Image
+from unittest.mock import patch, MagicMock
 
 from google_photos_organizer.utils.file_utils import (
     normalize_filename,
