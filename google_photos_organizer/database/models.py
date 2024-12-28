@@ -1,6 +1,13 @@
 """Data models for database operations."""
 
 from dataclasses import dataclass
+from enum import Enum, auto
+
+
+class PhotoSource(str, Enum):
+    """Photo source enum."""
+    LOCAL = "local"
+    GOOGLE = "google"
 
 
 @dataclass

@@ -11,6 +11,22 @@ from PIL import Image
 
 logger = logging.getLogger(__name__)
 
+def is_media_file(filename: str) -> bool:
+    """Check if a file is a media file based on its extension.
+
+    Args:
+        filename: Name of the file to check
+
+    Returns:
+        True if the file is a media file, False otherwise
+    """
+    # List of supported media file extensions
+    media_extensions = {
+        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp',  # Images
+        '.mp4', '.mov', '.avi', '.wmv', '.flv', '.webm'  # Videos
+    }
+    return os.path.splitext(filename)[1].lower() in media_extensions
+
 def normalize_filename(filename: str) -> str:
     """Normalize filename for comparison.
 

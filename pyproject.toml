@@ -14,6 +14,25 @@ google-api-python-client = "^2.156.0"
 pillow = "^11.0.0"
 tabulate = "^0.9.0"
 
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+pytest-playwright = "^0.4.3"
+hypothesis = "^6.75.3"
+locust = "^2.15.1"
+pylint = "^3.0.3"
+pytest-benchmark = "4.0.0"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-v --cov=google_photos_organizer --cov-report=term-missing"
+markers = [
+    "integration: marks tests as integration tests",
+    "e2e: marks tests as end-to-end tests",
+    "performance: marks tests as performance tests"
+]

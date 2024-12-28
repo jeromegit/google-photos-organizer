@@ -1,22 +1,34 @@
+"""Main module for Google Photos Organizer."""
+import os
 import pickle
 import re
 import argparse
+import logging
 import mimetypes
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, List
-from urllib.parse import urlparse, unquote
-
-from google.auth.transport.requests import Request
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from typing import Dict, List, Optional, Tuple, Union
 from tabulate import tabulate
 
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+from google_photos_organizer.database.models import (
+    GoogleAlbumData,
+    GooglePhotoData,
+    LocalAlbumData,
+    LocalPhotoData,
+    PhotoSource
+)
 from google_photos_organizer.database.db_manager import DatabaseManager
-from google_photos_organizer.database.models import GooglePhotoData, GoogleAlbumData
-from google_photos_organizer.utils.file_utils import normalize_filename
-import logging
+from google_photos_organizer.utils.file_utils import (
+    get_image_dimensions,
+    normalize_filename,
+    get_file_metadata,
+    is_media_file
+)
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +36,15 @@ logger = logging.getLogger(__name__)
 SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
 
 class GooglePhotosOrganizer:
+    """Manages Google Photos organization and local photo scanning."""
+
     def __init__(self, source_dir: str, dry_run: bool = False):
+        """Initialize the organizer.
+
+        Args:
+            source_dir: Directory to scan for photos
+            dry_run: If True, show operations without executing them
+        """
         self.source_dir = source_dir
         self.service = None
         self.duplicates = defaultdict(list)
@@ -106,13 +126,8 @@ class GooglePhotosOrganizer:
         # Filter out non-duplicates
         return {k: v for k, v in duplicates.items() if len(v) > 1}
 
-    def list_albums_and_photos(self):
-        """
-        Retrieve all albums and their associated media items.
-        
-        Returns:
-            dict: A dictionary where keys are album titles and values are lists of media items.
-        """
+    def list_albums_and_photos(self) -> Dict[str, List[Dict]]:
+        """Retrieve all albums and their associated media items."""
         albums_dict = {}
         
         # List albums
@@ -186,7 +201,6 @@ class GooglePhotosOrganizer:
         if not self.db:
             self.db = DatabaseManager('photos.db')
         self.db.init_database()
-        self.db.init_local_tables()
 
     def create_indices(self):
         """Create indices for better query performance."""
@@ -197,7 +211,7 @@ class GooglePhotosOrganizer:
 
     def store_photo_metadata(self, photo_id: str, filename: str, normalized_filename: str, 
                            mime_type: str, creation_time: str, width: int, height: int, 
-                           product_url: str):
+                           product_url: str = None):
         """Store photo metadata in the database."""
         photo_data = GooglePhotoData(
             id=photo_id,
@@ -209,7 +223,7 @@ class GooglePhotosOrganizer:
             height=height,
             product_url=product_url
         )
-        self.db.store_photo(photo_data)
+        self.db.store_photo(photo_data, PhotoSource.GOOGLE)
 
     def store_album_metadata(self, album_id: str, title: str, creation_time: str):
         """Store album metadata in the database."""
@@ -218,11 +232,11 @@ class GooglePhotosOrganizer:
             title=title,
             creation_time=creation_time
         )
-        self.db.store_album(album_data)
+        self.db.store_album(album_data, PhotoSource.GOOGLE)
 
     def store_album_photo_relation(self, album_id: str, photo_id: str):
         """Store album-photo relationship in the database."""
-        self.db.store_album_photo(album_id, photo_id)
+        self.db.store_album_photo(album_id, photo_id, PhotoSource.GOOGLE)
 
     def store_local_album_metadata(self, album_id: str, title: str, directory_path: str, 
                                  creation_time: str):
@@ -234,34 +248,34 @@ class GooglePhotosOrganizer:
             directory_path: Path to the album directory
             creation_time: Album creation/modification time
         """
-        album_data = self.db.LocalAlbumData(
+        album_data = LocalAlbumData(
             id=album_id,
             title=title,
             full_path=directory_path,
             creation_time=creation_time
         )
-        self.db.store_local_album(album_data)
+        self.db.store_album(album_data, PhotoSource.LOCAL)
 
     def store_local_photo_metadata(self, photo_id: str, filename: str, normalized_filename: str,
                                  file_path: str, creation_time: str, width: int, height: int,
                                  mime_type: str = None, size: int = 0):
         """Store local photo metadata in the database."""
-        photo_data = self.db.LocalPhotoData(
+        photo_data = LocalPhotoData(
             id=photo_id,
             filename=filename,
             normalized_filename=normalized_filename,
             full_path=file_path,
             creation_time=creation_time,
-            mime_type=mime_type or '',
-            size=size,
+            mime_type=mime_type,
             width=width,
-            height=height
+            height=height,
+            size=size
         )
-        self.db.store_local_photo(photo_data)
+        self.db.store_photo(photo_data, PhotoSource.LOCAL)
 
     def store_local_album_photo_relation(self, album_id: str, photo_id: str):
         """Store local album-photo relationship in the database."""
-        self.db.store_local_album_photo(album_id, photo_id)
+        self.db.store_album_photo(album_id, photo_id, PhotoSource.LOCAL)
 
     def store_photos(self, max_photos=100000):
         """Store photos in SQLite database."""
@@ -360,6 +374,7 @@ class GooglePhotosOrganizer:
                 photos_in_album = 0
                 
                 while True:
+                    print(f"Fetching photos for album {album['id']} ({album.get('title', 'Untitled')})")
                     media_request = self.service.mediaItems().search(
                         body={'albumId': album['id'], 'pageToken': next_page_token}
                     )
@@ -367,6 +382,7 @@ class GooglePhotosOrganizer:
                     
                     media_items = media_response.get('mediaItems', [])
                     if not media_items:
+                        print(f"No media items found in album {album.get('title', 'Untitled')}")
                         break
                         
                     for media_item in media_items:
@@ -383,22 +399,30 @@ class GooglePhotosOrganizer:
 
         except Exception as e:
             print(f"Error storing album photos: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
-    def store_photos_and_albums(self, max_photos=100000):
+    def store_photos_and_albums(self, max_photos=100000) -> None:
         """Store photos and albums in SQLite database."""
-        self.init_db()
-        
-        # Step 1: Store photos
-        if self.store_photos(max_photos):
-            # Step 2: Store albums and their photos
-            albums = self.store_albums()
-            if albums:
-                self.store_album_photos(albums)
-                # Step 3: Create indices after all data is loaded
-                self.create_indices()
-                return True
-        return False
+        if not self.service:
+            self.authenticate()
+
+        if not self.db:
+            self.init_db()
+
+        # Store photos first
+        stored_photos = self.store_photos(max_photos)
+
+        # Then store albums
+        stored_albums = self.store_albums()
+
+        # Finally store album-photo relationships
+        if stored_albums:
+            self.store_album_photos(stored_albums)
+
+        # Create indices for better query performance
+        self.db.create_indices(source=PhotoSource.GOOGLE)
 
     def print_album_contents(self):
         """Print all albums and their photos from the database."""
@@ -466,19 +490,28 @@ class GooglePhotosOrganizer:
                 except Exception as e:
                     logger.warning(f"Failed to get dimensions for {file_path}: {e}")
 
-            self.store_local_photo_metadata(
-                photo_id=photo_id,
+            metadata = get_file_metadata(file_path)
+            if metadata:
+                width = metadata.get('width', width)
+                height = metadata.get('height', height)
+                mime_type = metadata.get('mime_type', mimetypes.guess_type(file)[0])
+            else:
+                mime_type = mimetypes.guess_type(file)[0]
+
+            photo_data = LocalPhotoData(
+                id=photo_id,
                 filename=file,
                 normalized_filename=normalize_filename(file),
-                file_path=file_path,
+                full_path=file_path,
                 creation_time=datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
+                mime_type=mime_type,
                 width=width,
                 height=height,
-                mime_type=mimetypes.guess_type(file)[0],
                 size=file_stat.st_size
             )
             
-            self.store_local_album_photo_relation(album_id, photo_id)
+            self.db.store_photo(photo_data, PhotoSource.LOCAL)
+            self.db.store_album_photo(album_id, photo_id, PhotoSource.LOCAL)
             return True
             
         except Exception as e:
@@ -549,34 +582,29 @@ class GooglePhotosOrganizer:
         if not self._validate_source_directory():
             return False
 
-        try:
+        if not self.db:
             self.init_db()
-            total_photos = total_albums = failed_files = 0
-            logger.info(f"Scanning directory: {self.source_dir}")
+
+        try:
+            total_processed = 0
+            total_failed = 0
 
             for root, _, files in os.walk(self.source_dir):
-                processed_files, failed = self._process_directory(root, files, self.source_dir)
-                
-                if processed_files > 0:
-                    total_albums += 1
-                    total_photos += processed_files
-                    failed_files += failed
+                processed, failed = self._process_directory(root, files, self.source_dir)
+                total_processed += processed
+                total_failed += failed
 
-                    if total_albums % 10 == 0:
-                        logger.info(f"Processed {total_albums} directories with media")
-                    if total_photos % 100 == 0:
-                        logger.info(f"Processed {total_photos} media files")
+            print(f"\nProcessed {total_processed} files")
+            if total_failed > 0:
+                print(f"Failed to process {total_failed} files")
 
-            logger.info("\nCompleted scanning local directory:")
-            logger.info(f"- Processed {total_albums} directories with media")
-            logger.info(f"- Successfully processed {total_photos} media files")
-            if failed_files > 0:
-                logger.warning(f"- Failed to process {failed_files} files")
+            # Create indices for better query performance
+            self.db.create_indices(source=PhotoSource.LOCAL)
 
             return True
 
         except Exception as e:
-            logger.error(f"Error scanning directory: {e}", exc_info=True)
+            print(f"Error scanning directory: {e}")
             return False
 
     def print_local_album_contents(self):
@@ -686,16 +714,11 @@ class GooglePhotosOrganizer:
             self.init_db()
             
         rows = []
-        
         normalized_pattern = normalize_filename(filename_pattern)
         
-        # Search local photos
-        local_photos = self.db.search_local_photos(filename_pattern, normalized_pattern)
-        rows.extend([(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in local_photos])
-        
-        # Search Google photos
-        google_photos = self.db.search_google_photos(filename_pattern, normalized_pattern)
-        rows.extend([(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in google_photos])
+        # Search both local and Google photos in one query
+        photos = self.db.search_photos(filename_pattern, normalized_pattern)
+        rows.extend([(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in photos])
         
         # Sort all rows by normalized filename
         rows.sort(key=lambda x: x[2])

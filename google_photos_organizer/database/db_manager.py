@@ -1,19 +1,18 @@
 """Database operations for Google Photos Organizer."""
 
 import sqlite3
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Union
 
 from google_photos_organizer.database.models import (
     GoogleAlbumData,
     GooglePhotoData,
     LocalAlbumData,
-    LocalPhotoData
+    LocalPhotoData,
+    PhotoSource
 )
-
 
 class DatabaseError(Exception):
     """Database error exception."""
-
 
 class DatabaseManager:
     """Manages database operations for Google Photos Organizer."""
@@ -30,6 +29,17 @@ class DatabaseManager:
         self.cursor = None
         self.dry_run = dry_run
 
+    def _get_table_prefix(self, source: PhotoSource) -> str:
+        """Get table prefix based on source.
+        
+        Args:
+            source: Photo source (local or google)
+            
+        Returns:
+            Table prefix to use
+        """
+        return f"{source.value}_"
+
     def _execute(self, sql: str, params: Tuple[Any, ...] = None) -> None:
         """Execute SQL with optional dry run mode.
 
@@ -41,13 +51,14 @@ class DatabaseManager:
             # Format the SQL with parameters for display
             if params:
                 # Replace ? with %s for string formatting
-                display_sql = sql.replace('?', '%s')
-                # Format parameters for display
-                formatted_params = tuple(repr(p) if isinstance(p, str) else str(p) for p in params)
-                print(f"Would execute: {display_sql % formatted_params}")
+                sql_formatted = sql.replace('?', '%s')
+                print(f"[DRY RUN] Would execute: {sql_formatted % params}")
             else:
-                print(f"Would execute: {sql}")
+                print(f"[DRY RUN] Would execute: {sql}")
             return
+
+        if not self.conn or not self.cursor:
+            self.connect()
 
         if params:
             self.cursor.execute(sql, params)
@@ -69,308 +80,251 @@ class DatabaseManager:
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to connect to database: {e}") from e
 
-    def init_database(self) -> None:
-        """Initialize database tables for Google Photos data."""
+    def init_database(self, source: Optional[PhotoSource] = None) -> None:
+        """Initialize database tables.
+        
+        Args:
+            source: Optional source to initialize. If None, initializes all tables.
+        """
         if not self.conn or not self.cursor:
             self.connect()
 
         try:
-            # Create albums table
-            self._execute('''
-                CREATE TABLE IF NOT EXISTS albums (
-                    id TEXT PRIMARY KEY,
-                    title TEXT,
-                    creation_time TEXT,
-                    media_item_count INTEGER
-                )
-            ''')
+            sources = [source] if source else list(PhotoSource)
+            for src in sources:
+                prefix = self._get_table_prefix(src)
+                
+                # Drop and create photos table
+                self._execute(f'DROP TABLE IF EXISTS {prefix}photos')
+                self._execute(f'''
+                    CREATE TABLE IF NOT EXISTS {prefix}photos (
+                        id TEXT PRIMARY KEY,
+                        filename TEXT,
+                        normalized_filename TEXT,
+                        mime_type TEXT,
+                        creation_time TEXT,
+                        width INTEGER,
+                        height INTEGER,
+                        product_url TEXT
+                    )
+                ''')
 
-            # Create photos table
-            self._execute('''
-                CREATE TABLE IF NOT EXISTS photos (
-                    id TEXT PRIMARY KEY,
-                    filename TEXT,
-                    normalized_filename TEXT,
-                    mime_type TEXT,
-                    creation_time TEXT,
-                    width INTEGER,
-                    height INTEGER,
-                    product_url TEXT
-                )
-            ''')
+                # Drop and create albums table
+                self._execute(f'DROP TABLE IF EXISTS {prefix}albums')
+                self._execute(f'''
+                    CREATE TABLE IF NOT EXISTS {prefix}albums (
+                        id TEXT PRIMARY KEY,
+                        title TEXT,
+                        creation_time TEXT,
+                        media_item_count INTEGER
+                    )
+                ''')
 
-            # Create album_photos table for many-to-many relationship
-            self._execute('''
-                CREATE TABLE IF NOT EXISTS album_photos (
-                    album_id TEXT,
-                    photo_id TEXT,
-                    FOREIGN KEY (album_id) REFERENCES albums (id),
-                    FOREIGN KEY (photo_id) REFERENCES photos (id),
-                    PRIMARY KEY (album_id, photo_id)
-                )
-            ''')
+                # Drop and create album photos table
+                self._execute(f'DROP TABLE IF EXISTS {prefix}album_photos')
+                self._execute(f'''
+                    CREATE TABLE IF NOT EXISTS {prefix}album_photos (
+                        album_id TEXT,
+                        photo_id TEXT,
+                        PRIMARY KEY (album_id, photo_id),
+                        FOREIGN KEY (album_id) REFERENCES {prefix}albums(id),
+                        FOREIGN KEY (photo_id) REFERENCES {prefix}photos(id)
+                    )
+                ''')
 
             self._commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to initialize database: {e}") from e
 
-    def init_local_tables(self) -> None:
-        """Initialize tables for local photo data."""
-        try:
-            if self.dry_run:
-                print("Would create local tables")
-                return
-
-            self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS local_photos (
-                    id TEXT PRIMARY KEY,
-                    filename TEXT NOT NULL,
-                    normalized_filename TEXT NOT NULL,
-                    full_path TEXT NOT NULL,
-                    creation_time TEXT NOT NULL,
-                    mime_type TEXT,
-                    width INTEGER,
-                    height INTEGER,
-                    size INTEGER
-                )
-            """)
-
-            self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS local_albums (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    full_path TEXT NOT NULL,
-                    creation_time TEXT NOT NULL
-                )
-            """)
-
-            self.cursor.execute("""
-                CREATE TABLE IF NOT EXISTS local_album_photos (
-                    album_id TEXT NOT NULL,
-                    photo_id TEXT NOT NULL,
-                    PRIMARY KEY (album_id, photo_id),
-                    FOREIGN KEY (album_id) REFERENCES local_albums(id),
-                    FOREIGN KEY (photo_id) REFERENCES local_photos(id)
-                )
-            """)
-
-            self.conn.commit()
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to initialize local tables: {e}") from e
-
-    def create_indices(self) -> None:
-        """Create indices for better query performance."""
-        try:
-            if self.dry_run:
-                print("Would create indices")
-                return
-
-            # Indices for photos table
-            self.cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_photos_filename 
-                ON photos(filename)
-            """)
-            self.cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_photos_normalized_filename 
-                ON photos(normalized_filename)
-            """)
-
-            # Indices for local_photos table
-            self.cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_local_photos_filename 
-                ON local_photos(filename)
-            """)
-            self.cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_local_photos_normalized_filename 
-                ON local_photos(normalized_filename)
-            """)
-
-            # Indices for albums and local_albums
-            self.cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_albums_title 
-                ON albums(title)
-            """)
-            self.cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_local_albums_title 
-                ON local_albums(title)
-            """)
-
-            self.conn.commit()
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to create indices: {e}") from e
-
-    def store_album(self, album_data: GoogleAlbumData) -> None:
-        """Store album data in database.
+    def store_photo(self, photo_data: Union[GooglePhotoData, LocalPhotoData], source: PhotoSource) -> None:
+        """Store photo metadata in the database.
 
         Args:
-            album_data: Album data from Google Photos API
+            photo_data: Photo metadata to store
+            source: Source of the photo (local or google)
         """
-        if not self.conn or not self.cursor:
-            self.connect()
-
         try:
-            self._execute('''
-                INSERT OR REPLACE INTO albums (id, title, creation_time)
-                VALUES (?, ?, ?)
-            ''', (album_data.id, album_data.title, album_data.creation_time))
-            self._commit()
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to store album: {e}") from e
-
-    def store_photo(self, photo_data: GooglePhotoData) -> None:
-        """Store photo data in database.
-
-        Args:
-            photo_data: Photo data from Google Photos API
-        """
-        if not self.conn or not self.cursor:
-            self.connect()
-
-        try:
-            self._execute('''
-                INSERT OR REPLACE INTO photos (
+            prefix = self._get_table_prefix(source)
+            self._execute(
+                f'''
+                INSERT OR REPLACE INTO {prefix}photos (
                     id, filename, normalized_filename, mime_type,
                     creation_time, width, height, product_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    photo_data.id,
+                    photo_data.filename,
+                    photo_data.normalized_filename,
+                    photo_data.mime_type,
+                    photo_data.creation_time,
+                    photo_data.width,
+                    photo_data.height,
+                    getattr(photo_data, 'product_url', None)  # Use None for local photos
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                photo_data.id,
-                photo_data.filename,
-                photo_data.normalized_filename,
-                photo_data.mime_type,
-                photo_data.creation_time,
-                photo_data.width,
-                photo_data.height,
-                photo_data.product_url
-            ))
+            )
             self._commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to store photo: {e}") from e
 
-    def store_album_photo(self, album_id: str, photo_id: str) -> None:
+    def store_album(self, album_data: Union[GoogleAlbumData, LocalAlbumData], source: PhotoSource) -> None:
+        """Store album metadata in the database.
+
+        Args:
+            album_data: Album metadata to store
+            source: Source of the album (local or google)
+        """
+        try:
+            prefix = self._get_table_prefix(source)
+            self._execute(
+                f'''
+                INSERT OR REPLACE INTO {prefix}albums (
+                    id, title, creation_time
+                ) VALUES (?, ?, ?)
+                ''',
+                (album_data.id, album_data.title, album_data.creation_time)
+            )
+            self._commit()
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to store album: {e}") from e
+
+    def store_album_photo(self, album_id: str, photo_id: str, source: PhotoSource) -> None:
         """Store album-photo relationship in database.
 
         Args:
             album_id: Album ID
             photo_id: Photo ID
+            source: Source of the album/photo (local or google)
         """
-        if not self.conn or not self.cursor:
-            self.connect()
-
         try:
-            self._execute('''
-                INSERT OR REPLACE INTO album_photos (album_id, photo_id)
-                VALUES (?, ?)
-            ''', (album_id, photo_id))
+            prefix = self._get_table_prefix(source)
+            self._execute(
+                f'''
+                INSERT OR REPLACE INTO {prefix}album_photos (
+                    album_id, photo_id
+                ) VALUES (?, ?)
+                ''',
+                (album_id, photo_id)
+            )
             self._commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to store album-photo relationship: {e}") from e
 
-    def store_local_album(self, album_data: LocalAlbumData) -> None:
-        """Store local album data in database.
-
-        Args:
-            album_data: Local album data
-        """
-        if not self.conn or not self.cursor:
-            self.connect()
-
-        try:
-            self._execute('''
-                INSERT OR REPLACE INTO local_albums (
-                    id, title, full_path, creation_time
-                )
-                VALUES (?, ?, ?, ?)
-            ''', (
-                album_data.id,
-                album_data.title,
-                album_data.full_path,
-                album_data.creation_time
-            ))
-            self._commit()
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to store local album: {e}") from e
-
-    def store_local_photo(self, photo_data: LocalPhotoData) -> None:
-        """Store local photo data in database.
-
-        Args:
-            photo_data: Local photo data
-        """
-        if not self.conn or not self.cursor:
-            self.connect()
-
-        try:
-            self._execute('''
-                INSERT OR REPLACE INTO local_photos (
-                    id, filename, normalized_filename, full_path,
-                    creation_time, mime_type, size, width, height
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                photo_data.id,
-                photo_data.filename,
-                photo_data.normalized_filename,
-                photo_data.full_path,
-                photo_data.creation_time,
-                photo_data.mime_type,
-                photo_data.size,
-                photo_data.width,
-                photo_data.height
-            ))
-            self._commit()
-        except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to store local photo: {e}") from e
-
-    def store_local_album_photo(self, album_id: str, photo_id: str) -> None:
-        """Store local album-photo relationship in database.
-
-        Args:
-            album_id: Album ID
-            photo_id: Photo ID
-        """
-        if not self.conn or not self.cursor:
-            self.connect()
-
-        try:
-            self._execute('''
-                INSERT OR REPLACE INTO local_album_photos (album_id, photo_id)
-                VALUES (?, ?)
-            ''', (album_id, photo_id))
-            self._commit()
-        except sqlite3.Error as e:
-            raise DatabaseError(
-                f"Failed to store local album-photo relationship: {e}"
-            ) from e
-
-    def get_google_album(self, title: str) -> Optional[Dict[str, Any]]:
-        """Get Google Photos album by title.
+    def get_album(self, title: str, source: PhotoSource) -> Optional[Dict]:
+        """Get album by title.
 
         Args:
             title: Album title
+            source: Source of the album (local or google)
 
         Returns:
-            Album data if found, None otherwise
+            Album data or None if not found
+        """
+        try:
+            prefix = self._get_table_prefix(source)
+            if source == PhotoSource.LOCAL:
+                self._execute(
+                    f'''
+                    SELECT id, title, creation_time, full_path
+                    FROM {prefix}albums
+                    WHERE title = ?
+                    ''',
+                    (title,)
+                )
+            else:
+                self._execute(
+                    f'''
+                    SELECT id, title, creation_time
+                    FROM {prefix}albums
+                    WHERE title = ?
+                    ''',
+                    (title,)
+                )
+            row = self.cursor.fetchone()
+            if row:
+                if source == PhotoSource.LOCAL:
+                    return {
+                        'id': row[0],
+                        'title': row[1],
+                        'creation_time': row[2],
+                        'full_path': row[3]
+                    }
+                else:
+                    return {
+                        'id': row[0],
+                        'title': row[1],
+                        'creation_time': row[2]
+                    }
+            return None
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get album: {e}") from e
+
+    def _has_column(self, table: str, column: str) -> bool:
+        """Check if a table has a specific column.
+
+        Args:
+            table: Table name
+            column: Column name
+
+        Returns:
+            True if column exists, False otherwise
+        """
+        try:
+            self._execute(f"SELECT {column} FROM {table} LIMIT 0")
+            return True
+        except sqlite3.OperationalError:
+            return False
+
+    def search_photos(self, query: str, normalized_query: str) -> List[Tuple]:
+        """Search for photos in both local and Google Photos databases.
+
+        Args:
+            query: Search query
+            normalized_query: Normalized search query
+
+        Returns:
+            List of matching photos with their metadata
         """
         if not self.conn or not self.cursor:
             self.connect()
 
         try:
-            self._execute('''
-                SELECT id, title, creation_time
-                FROM albums
-                WHERE title = ?
-            ''', (title,))
-            row = self.cursor.fetchone()
-            if row:
-                return {
-                    'id': row[0],
-                    'title': row[1],
-                    'creation_time': row[2]
-                }
-            return None
+            # Build union query for all sources
+            queries = []
+            params = []
+            
+            for source in PhotoSource:
+                prefix = self._get_table_prefix(source)
+                table = f"{prefix}photos"
+
+                # Check if product_url column exists
+                has_product_url = self._has_column(table, "product_url")
+                product_url_select = "p.product_url" if has_product_url else "NULL as product_url"
+
+                queries.append(f'''
+                    SELECT
+                        '{source.value}' as source,
+                        p.filename,
+                        p.normalized_filename,
+                        p.width,
+                        p.height,
+                        p.creation_time,
+                        {product_url_select},
+                        GROUP_CONCAT(a.title, ' | ') as albums
+                    FROM {prefix}photos p
+                    LEFT JOIN {prefix}album_photos ap ON p.id = ap.photo_id
+                    LEFT JOIN {prefix}albums a ON ap.album_id = a.id
+                    WHERE p.filename LIKE ? OR p.normalized_filename LIKE ?
+                    GROUP BY p.id
+                ''')
+                params.extend([f'%{query}%', f'%{normalized_query}%'])
+
+            # Combine all queries with UNION ALL
+            sql = ' UNION ALL '.join(queries)
+            self._execute(f'SELECT DISTINCT * FROM ({sql})', tuple(params))
+            return self.cursor.fetchall()
         except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to get Google album: {e}") from e
+            raise DatabaseError(f"Failed to search photos: {e}") from e
 
     def get_missing_files(
         self,
@@ -397,8 +351,8 @@ class DatabaseManager:
                 WHERE lap.album_id = ?
                 AND NOT EXISTS (
                     SELECT 1
-                    FROM photos p
-                    JOIN album_photos ap ON p.id = ap.photo_id
+                    FROM google_photos p
+                    JOIN google_album_photos ap ON p.id = ap.photo_id
                     WHERE ap.album_id = ?
                     AND p.normalized_filename = lp.normalized_filename
                 )
@@ -433,6 +387,8 @@ class DatabaseManager:
                     lp.width,
                     lp.height,
                     lp.creation_time,
+                    lp.full_path,
+                    lp.size,
                     GROUP_CONCAT(la.title, ' | ') as albums
                 FROM local_photos lp
                 LEFT JOIN local_album_photos lap ON lp.id = lap.photo_id
@@ -444,39 +400,57 @@ class DatabaseManager:
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to search local photos: {e}") from e
 
-    def search_google_photos(
-        self,
-        query: str,
-        normalized_query: str
-    ) -> List[Tuple]:
-        """Search for photos in Google Photos database.
+    def create_indices(self, source: Optional[PhotoSource] = None) -> None:
+        """Create indices for better query performance.
 
         Args:
-            query: Search query
-            normalized_query: Normalized search query
-
-        Returns:
-            List of matching photos with their metadata
+            source: Optional source to create indices for. If None, creates indices for all sources.
         """
         if not self.conn or not self.cursor:
             self.connect()
 
         try:
-            self._execute('''
-                SELECT DISTINCT
-                    'google' as source,
-                    p.filename,
-                    p.normalized_filename,
-                    p.width,
-                    p.height,
-                    p.creation_time,
-                    GROUP_CONCAT(a.title, ' | ') as albums
-                FROM photos p
-                LEFT JOIN album_photos ap ON p.id = ap.photo_id
-                LEFT JOIN albums a ON ap.album_id = a.id
-                WHERE p.filename LIKE ? OR p.normalized_filename LIKE ?
-                GROUP BY p.id
-            ''', (f'%{query}%', f'%{normalized_query}%'))
-            return self.cursor.fetchall()
+            sources = [source] if source else [PhotoSource.LOCAL, PhotoSource.GOOGLE]
+            
+            for src in sources:
+                prefix = self._get_table_prefix(src)
+                
+                # Create indices on photos table
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS {prefix}photos_filename_idx 
+                    ON {prefix}photos(filename)
+                ''')
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS {prefix}photos_normalized_filename_idx 
+                    ON {prefix}photos(normalized_filename)
+                ''')
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS {prefix}photos_creation_time_idx 
+                    ON {prefix}photos(creation_time)
+                ''')
+                
+                # Create indices on albums table
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS {prefix}albums_title_idx 
+                    ON {prefix}albums(title)
+                ''')
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS {prefix}albums_creation_time_idx 
+                    ON {prefix}albums(creation_time)
+                ''')
+                
+                # Create indices on album_photos table
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS {prefix}album_photos_photo_id_idx 
+                    ON {prefix}album_photos(photo_id)
+                ''')
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS {prefix}album_photos_album_id_idx 
+                    ON {prefix}album_photos(album_id)
+                ''')
+            
+            self._commit()
+            print(f"Created indices for {', '.join(src.value for src in sources)} photos")
+            
         except sqlite3.Error as e:
-            raise DatabaseError(f"Failed to search Google photos: {e}") from e
+            raise DatabaseError(f"Failed to create indices: {e}") from e
