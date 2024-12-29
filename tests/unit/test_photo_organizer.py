@@ -5,8 +5,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from google_photos_organizer.database.models import PhotoSource
+from google_photos_organizer.database.models import PhotoSource, GooglePhotoData, LocalPhotoData
 from google_photos_organizer.main import GooglePhotosOrganizer
+from google_photos_organizer.utils.file_utils import FileMetadata
 
 
 @pytest.fixture
@@ -51,30 +52,32 @@ def test_store_photo_metadata(organizer):
     organizer.db = MagicMock()
 
     # Store the photo metadata
-    organizer.store_photo_metadata(
-        photo_id=photo_id,
+    photo_data = GooglePhotoData(
+        id=photo_id,
         filename=filename,
         normalized_filename=normalized_filename,
         mime_type=mime_type,
         creation_time=creation_time,
         width=width,
         height=height,
+        path=photo_id
     )
+    organizer.store_photo_metadata(photo_data, PhotoSource.GOOGLE)
 
     # Verify the database call
     organizer.db.store_photo.assert_called_once()
     args = organizer.db.store_photo.call_args[0]
-    photo_data = args[0]
+    stored_photo_data = args[0]
     source = args[1]
 
-    assert photo_data.id == photo_id
-    assert photo_data.filename == filename
-    assert photo_data.normalized_filename == normalized_filename
-    assert photo_data.mime_type == mime_type
-    assert photo_data.creation_time == creation_time
-    assert photo_data.width == width
-    assert photo_data.height == height
-    assert photo_data.path == photo_id
+    assert stored_photo_data.id == photo_id
+    assert stored_photo_data.filename == filename
+    assert stored_photo_data.normalized_filename == normalized_filename
+    assert stored_photo_data.mime_type == mime_type
+    assert stored_photo_data.creation_time == creation_time
+    assert stored_photo_data.width == width
+    assert stored_photo_data.height == height
+    assert stored_photo_data.path == photo_id
     assert source == PhotoSource.GOOGLE
 
 
@@ -94,33 +97,34 @@ def test_store_local_photo_metadata(organizer):
     organizer.db = MagicMock()
 
     # Store the photo metadata
-    organizer.store_local_photo_metadata(
-        photo_id=photo_id,
+    photo_data = LocalPhotoData(
+        id=photo_id,
         filename=filename,
         normalized_filename=normalized_filename,
-        path=path,
+        mime_type=mime_type,
         creation_time=creation_time,
         width=width,
         height=height,
-        mime_type=mime_type,
-        size=size,
+        path=path,
+        size=size
     )
+    organizer.store_local_photo_metadata(photo_data)
 
     # Verify the database call
     organizer.db.store_photo.assert_called_once()
     args = organizer.db.store_photo.call_args[0]
-    photo_data = args[0]
+    stored_photo_data = args[0]
     source = args[1]
 
-    assert photo_data.id == photo_id
-    assert photo_data.filename == filename
-    assert photo_data.normalized_filename == normalized_filename
-    assert photo_data.path == path
-    assert photo_data.creation_time == creation_time
-    assert photo_data.width == width
-    assert photo_data.height == height
-    assert photo_data.mime_type == mime_type
-    assert photo_data.size == size
+    assert stored_photo_data.id == photo_id
+    assert stored_photo_data.filename == filename
+    assert stored_photo_data.normalized_filename == normalized_filename
+    assert stored_photo_data.path == path
+    assert stored_photo_data.creation_time == creation_time
+    assert stored_photo_data.width == width
+    assert stored_photo_data.height == height
+    assert stored_photo_data.mime_type == mime_type
+    assert stored_photo_data.size == size
     assert source == PhotoSource.LOCAL
 
 
@@ -140,13 +144,16 @@ def test_scan_local_directory(mock_normalize, mock_dimensions, mock_metadata, or
         patch("os.stat") as mock_stat,
         patch("os.path.join", side_effect=lambda *args: "/".join(args)),
     ):
-
-        # Mock file metadata
-        mock_metadata.return_value = {
-            "creation_time": "2024-01-01T00:00:00Z",
-            "mime_type": "image/jpeg",
-            "size": 1024,
-        }
+        # Create a metadata object with attributes
+        mock_metadata.return_value = FileMetadata(
+            filename="test.jpg",
+            creation_time="2024-01-01T00:00:00Z",
+            size=1024,
+            modified="2024-01-01T00:00:00Z",
+            mime_type="image/jpeg",
+            width=1920,
+            height=1080
+        )
         mock_dimensions.return_value = (1920, 1080)
         mock_normalize.side_effect = lambda x: x.replace(".", "_")
         mock_stat.return_value.st_mtime = datetime.now().timestamp()

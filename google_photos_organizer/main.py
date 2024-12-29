@@ -23,6 +23,7 @@ from google_photos_organizer.utils.auth import authenticate_google_photos
 from google_photos_organizer.utils.file_utils import (
     get_file_metadata,
     get_image_dimensions,
+    is_media_file,
     normalize_filename,
 )
 
@@ -152,12 +153,11 @@ class GooglePhotosOrganizer:
                             id=item["id"],
                             filename=filename,
                             normalized_filename=normalize_filename(filename),
-                            path=item["id"],
                             creation_time=creation_time,
                             width=width,
                             height=height,
                             mime_type=item.get("mimeType"),
-                            size=0,
+                            path=item["id"]
                         )
                     )
 
@@ -508,6 +508,9 @@ class GooglePhotosOrganizer:
             for filename in files:
                 try:
                     filepath = os.path.join(root, filename)
+                    # Only process media files
+                    if not is_media_file(filename):
+                        continue
                     metadata = get_file_metadata(filepath)
                     if not metadata:
                         continue

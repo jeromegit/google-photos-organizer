@@ -59,13 +59,13 @@ def test_get_file_metadata(test_image):
     """Test getting file metadata."""
     metadata = get_file_metadata(str(test_image))
     assert metadata is not None
-    assert metadata["filename"] == "test_image.jpg"
-    assert metadata["mime_type"] == "image/jpeg"
-    assert metadata["width"] == 100
-    assert metadata["height"] == 200
-    assert isinstance(metadata["creation_time"], str)
-    assert isinstance(metadata["modified"], str)
-    assert isinstance(metadata["size"], int)
+    assert metadata.filename == "test_image.jpg"
+    assert metadata.mime_type == "image/jpeg"
+    assert metadata.width == 100
+    assert metadata.height == 200
+    assert isinstance(metadata.creation_time, str)
+    assert isinstance(metadata.modified, str)
+    assert isinstance(metadata.size, int)
 
     # Test with non-existent file
     assert get_file_metadata("non_existent.jpg") is None

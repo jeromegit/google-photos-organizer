@@ -4,12 +4,25 @@ import logging
 import mimetypes
 import os
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class FileMetadata:
+    """File metadata."""
+    filename: str
+    creation_time: str
+    size: int
+    modified: str
+    mime_type: str
+    width: int
+    height: int
 
 
 def is_media_file(filename: str) -> bool:
@@ -56,14 +69,14 @@ def normalize_filename(filename: str) -> str:
     return name
 
 
-def get_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
+def get_file_metadata(file_path: str) -> Optional[FileMetadata]:
     """Get metadata for a file.
 
     Args:
         file_path: Path to file
 
     Returns:
-        Dictionary containing file metadata, or None if file is not an image
+        FileMetadata object containing file metadata, or None if file is not an image
     """
     try:
         if not os.path.isfile(file_path):
@@ -75,15 +88,15 @@ def get_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
         mime_type, _ = mimetypes.guess_type(file_path)
         width, height = get_image_dimensions(file_path)
 
-        return {
-            "filename": os.path.basename(file_path),
-            "creation_time": creation_time.isoformat(),
-            "size": stat.st_size,
-            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
-            "mime_type": mime_type or "application/octet-stream",
-            "width": width,
-            "height": height,
-        }
+        return FileMetadata(
+            filename=os.path.basename(file_path),
+            creation_time=creation_time.isoformat(),
+            size=stat.st_size,
+            modified=datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            mime_type=mime_type or "application/octet-stream",
+            width=width,
+            height=height,
+        )
     except OSError as e:
         logger.warning("Failed to get metadata for %s: %s", file_path, str(e))
         return None
