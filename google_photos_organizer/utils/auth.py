@@ -1,11 +1,12 @@
 """Authentication utilities for Google Photos API."""
 
 import os
-from typing import cast
+from typing import Any, Optional, cast
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
 
 # If modifying these scopes, delete the file token.json.
 SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
@@ -49,3 +50,23 @@ def get_credentials(token_path: str, credentials_path: str) -> Credentials:
             token.write(creds.to_json())
 
     return cast(Credentials, creds)
+
+def authenticate_google_photos(token_path: str = 'token.json', 
+                            credentials_path: str = 'client_secret.json') -> Optional[Any]:
+    """Authenticate with Google Photos API and build the service.
+    
+    Args:
+        token_path: Path to token.json file
+        credentials_path: Path to credentials.json file
+        
+    Returns:
+        Google Photos API service object or None if authentication fails
+        
+    Raises:
+        Exception: If authentication fails
+    """
+    try:
+        creds = get_credentials(token_path, credentials_path)
+        return build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
+    except Exception as e:
+        raise Exception(f"Error authenticating with Google Photos: {e}") from e

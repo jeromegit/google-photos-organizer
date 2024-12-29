@@ -22,6 +22,7 @@ hypothesis = "^6.75.3"
 locust = "^2.15.1"
 pylint = "^3.0.3"
 pytest-benchmark = "4.0.0"
+pytest-mock = "^3.14.0"
 
 [build-system]
 requires = ["poetry-core"]

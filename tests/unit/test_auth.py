@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch, mock_open, create_autospec
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 
-from google_photos_organizer.utils.auth import get_credentials, SCOPES
+from google_photos_organizer.utils.auth import get_credentials, SCOPES, authenticate_google_photos
 
 @pytest.fixture
 def mock_token_data():
@@ -98,3 +98,24 @@ def test_get_credentials_missing_credentials_file():
         mock_exists.return_value = False
         with pytest.raises(FileNotFoundError):
             get_credentials("fake_token.json", "non_existent_credentials.json")
+
+def test_authenticate_google_photos(mocker):
+    """Test authenticating with Google Photos API."""
+    # Mock the build function
+    mock_service = mocker.Mock()
+    mock_build = mocker.patch('google_photos_organizer.utils.auth.build', return_value=mock_service)
+    
+    # Mock get_credentials
+    mock_creds = mocker.Mock()
+    mocker.patch('google_photos_organizer.utils.auth.get_credentials', return_value=mock_creds)
+    
+    # Test successful authentication
+    service = authenticate_google_photos()
+    assert service == mock_service
+    mock_build.assert_called_once_with('photoslibrary', 'v1', credentials=mock_creds, static_discovery=False)
+    
+    # Test authentication failure
+    mock_build.side_effect = Exception("API Error")
+    with pytest.raises(Exception) as exc_info:
+        authenticate_google_photos()
+    assert "Error authenticating with Google Photos" in str(exc_info.value)

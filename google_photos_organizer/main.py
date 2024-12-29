@@ -23,7 +23,7 @@ from google_photos_organizer.utils.file_utils import (
     normalize_filename,
     get_file_metadata
 )
-from google_photos_organizer.utils.auth import get_credentials
+from google_photos_organizer.utils.auth import authenticate_google_photos
 from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
@@ -42,8 +42,7 @@ class GooglePhotosOrganizer:
     def authenticate(self):
         """Authenticate with Google Photos API."""
         try:
-            creds = get_credentials('token.json', 'client_secret.json')
-            self.service = build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
+            self.service = authenticate_google_photos()
         except Exception as e:
             print(f"Error authenticating: {e}")
             return None
