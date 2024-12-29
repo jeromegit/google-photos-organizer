@@ -49,7 +49,7 @@ def test_photo_album_integration(db_manager):
     search_results = db_manager.search_photos("test.jpg", "test.jpg")
     assert len(search_results) > 0
     # Verify search result columns:
-    # [source, filename, normalized_filename, creation_time, mime_type, width, height, path]
+    # [source, filename, normalized_filename, creation_time, mime_type, width, height, albums]
     assert search_results[0][0] == "google"  # source
     assert search_results[0][1] == photo.filename  # filename
     assert search_results[0][2] == photo.normalized_filename  # normalized_filename
@@ -57,4 +57,4 @@ def test_photo_album_integration(db_manager):
     assert search_results[0][4] == photo.mime_type  # mime_type
     assert search_results[0][5] == photo.width  # width
     assert search_results[0][6] == photo.height  # height
-    assert search_results[0][7] == photo.path  # path
+    assert search_results[0][7] == album.title  # album name

@@ -111,7 +111,7 @@ def test_search_photos(test_db_manager):
     for source in PhotoSource:
         test_db_manager.init_database(source=source)
     
-    # Add a Google photo
+    # Add a Google photo and album
     google_photo = GooglePhotoData(
         id="google_id",
         filename="vacation.jpg",
@@ -123,8 +123,16 @@ def test_search_photos(test_db_manager):
         path=""
     )
     test_db_manager.store_photo(google_photo, PhotoSource.GOOGLE)
+
+    google_album = GoogleAlbumData(
+        id="google_album_id",
+        title="Summer Vacation",
+        creation_time="2023-01-01T00:00:00Z"
+    )
+    test_db_manager.store_album(google_album, PhotoSource.GOOGLE)
+    test_db_manager.store_album_photo(google_album.id, google_photo.id, PhotoSource.GOOGLE)
     
-    # Add a local photo
+    # Add a local photo and album
     local_photo = LocalPhotoData(
         id="local_id",
         filename="vacation2.jpg",
@@ -137,7 +145,26 @@ def test_search_photos(test_db_manager):
         size=1024
     )
     test_db_manager.store_photo(local_photo, PhotoSource.LOCAL)
+
+    local_album = LocalAlbumData(
+        id="local_album_id",
+        title="Local Vacation",
+        creation_time="2023-01-01T00:00:00Z",
+        path="/path/to/album"
+    )
+    test_db_manager.store_album(local_album, PhotoSource.LOCAL)
+    test_db_manager.store_album_photo(local_album.id, local_photo.id, PhotoSource.LOCAL)
     
     # Search for photos
     results = test_db_manager.search_photos("vacation", "vacation")
     assert len(results) == 2
+
+    # Verify Google photo result
+    google_result = next(r for r in results if r[0] == "google")
+    assert google_result[1] == "vacation.jpg"  # filename
+    assert google_result[7] == "Summer Vacation"  # album name
+
+    # Verify Local photo result
+    local_result = next(r for r in results if r[0] == "local")
+    assert local_result[1] == "vacation2.jpg"  # filename
+    assert local_result[7] == "Local Vacation"  # album name

@@ -645,27 +645,38 @@ class GooglePhotosOrganizer:
         normalized_pattern = normalize_filename(filename_pattern)
         photos = self.db.search_photos(filename_pattern, normalized_pattern)
         rows = []
-        rows.extend([(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in photos])
-        
-        # Sort all rows by normalized filename
-        rows.sort(key=lambda x: x[2])
+        for photo in photos:
+            source = photo[0]
+            filename = photo[1]
+            normalized_name = photo[2]
+            creation_time = photo[3]
+            mime_type = photo[4]
+            width = photo[5]
+            height = photo[6]
+            albums = photo[7] or ""
+            
+            rows.append([
+                source,
+                filename,
+                normalized_name,
+                creation_time,
+                mime_type,
+                f"{width}x{height}",
+                albums
+            ])
         
         if rows:
-            headers = [
-                "Source",
-                "Filename",
-                "Normalized",
-                "Creation Time",
-                "MIME Type",
-                "Width",
-                "Height",
-                "Path"
-            ]
-            print(f"\nFiles containing '{filename_pattern}':")
-            print(tabulate(rows, headers=headers, tablefmt="grid"))
-            print(f"\nTotal files found: {len(rows)}")
+            print("\nSearch results:")
+            print(tabulate(
+                rows,
+                headers=[
+                    "Source", "Filename", "Normalized Name", "Creation Time",
+                    "MIME Type", "Dimensions", "Albums"
+                ],
+                tablefmt="grid"
+            ))
         else:
-            print(f"No files found containing '{filename_pattern}'")
+            print(f"No photos found matching pattern: {filename_pattern}")
 
 def parse_arguments():
     """Parse command line arguments."""

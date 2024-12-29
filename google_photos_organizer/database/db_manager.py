@@ -303,9 +303,12 @@ class DatabaseManager:
                         p.mime_type,
                         p.width,
                         p.height,
-                        p.path
+                        GROUP_CONCAT(DISTINCT a.title) as albums
                     FROM {prefix}photos p
+                    LEFT JOIN {prefix}album_photos ap ON p.id = ap.photo_id
+                    LEFT JOIN {prefix}albums a ON ap.album_id = a.id
                     WHERE p.filename LIKE ? OR p.normalized_filename LIKE ?
+                    GROUP BY p.id
                 ''')
                 params.extend([f'%{filename_pattern}%', f'%{normalized_pattern}%'])
 
