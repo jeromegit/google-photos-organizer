@@ -81,55 +81,61 @@ class DatabaseManager:
             raise DatabaseError(f"Failed to connect to database: {e}") from e
 
     def init_database(self, source: Optional[PhotoSource] = None) -> None:
-        """Initialize database tables.
+        """Initialize the database tables.
         
         Args:
-            source: Optional source to initialize. If None, initializes all tables.
+            source: If provided, only drop and recreate tables for this source
         """
-        if not self.conn or not self.cursor:
-            self.connect()
-
         try:
             sources = [source] if source else list(PhotoSource)
             for src in sources:
                 prefix = self._get_table_prefix(src)
                 
-                # Drop and create photos table
+                self._execute(f'DROP TABLE IF EXISTS {prefix}album_photos')
                 self._execute(f'DROP TABLE IF EXISTS {prefix}photos')
+                self._execute(f'DROP TABLE IF EXISTS {prefix}albums')
+                
+                # Create tables only if they don't exist
                 self._execute(f'''
                     CREATE TABLE IF NOT EXISTS {prefix}photos (
                         id TEXT PRIMARY KEY,
-                        filename TEXT,
-                        normalized_filename TEXT,
-                        mime_type TEXT,
-                        creation_time TEXT,
+                        filename TEXT NOT NULL,
+                        normalized_filename TEXT NOT NULL,
+                        creation_time TEXT NOT NULL,
+                        mime_type TEXT NOT NULL,
                         width INTEGER,
                         height INTEGER,
-                        product_url TEXT
+                        path TEXT NOT NULL
                     )
                 ''')
 
-                # Drop and create albums table
-                self._execute(f'DROP TABLE IF EXISTS {prefix}albums')
                 self._execute(f'''
                     CREATE TABLE IF NOT EXISTS {prefix}albums (
                         id TEXT PRIMARY KEY,
-                        title TEXT,
-                        creation_time TEXT,
-                        media_item_count INTEGER
+                        title TEXT NOT NULL,
+                        creation_time TEXT NOT NULL,
+                        path TEXT NOT NULL
                     )
                 ''')
 
-                # Drop and create album photos table
-                self._execute(f'DROP TABLE IF EXISTS {prefix}album_photos')
                 self._execute(f'''
                     CREATE TABLE IF NOT EXISTS {prefix}album_photos (
-                        album_id TEXT,
-                        photo_id TEXT,
-                        PRIMARY KEY (album_id, photo_id),
-                        FOREIGN KEY (album_id) REFERENCES {prefix}albums(id),
-                        FOREIGN KEY (photo_id) REFERENCES {prefix}photos(id)
+                        album_id TEXT NOT NULL,
+                        photo_id TEXT NOT NULL,
+                        FOREIGN KEY (album_id) REFERENCES {prefix}albums (id),
+                        FOREIGN KEY (photo_id) REFERENCES {prefix}photos (id),
+                        PRIMARY KEY (album_id, photo_id)
                     )
+                ''')
+
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS idx_{prefix}filename 
+                    ON {prefix}photos(filename)
+                ''')
+
+                self._execute(f'''
+                    CREATE INDEX IF NOT EXISTS idx_{prefix}normalized_filename 
+                    ON {prefix}photos(normalized_filename)
                 ''')
 
             self._commit()
@@ -143,13 +149,16 @@ class DatabaseManager:
             photo_data: Photo metadata to store
             source: Source of the photo (local or google)
         """
+        if not self.conn or not self.cursor:
+            self.connect()
+
         try:
             prefix = self._get_table_prefix(source)
             self._execute(
                 f'''
                 INSERT OR REPLACE INTO {prefix}photos (
                     id, filename, normalized_filename, mime_type,
-                    creation_time, width, height, product_url
+                    creation_time, width, height, path
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
@@ -160,7 +169,7 @@ class DatabaseManager:
                     photo_data.creation_time,
                     photo_data.width,
                     photo_data.height,
-                    getattr(photo_data, 'product_url', None)  # Use None for local photos
+                    photo_data.path
                 )
             )
             self._commit()
@@ -168,22 +177,23 @@ class DatabaseManager:
             raise DatabaseError(f"Failed to store photo: {e}") from e
 
     def store_album(self, album_data: Union[GoogleAlbumData, LocalAlbumData], source: PhotoSource) -> None:
-        """Store album metadata in the database.
+        """Store album metadata in the database."""
+        if not self.conn or not self.cursor:
+            self.connect()
 
-        Args:
-            album_data: Album metadata to store
-            source: Source of the album (local or google)
-        """
         try:
             prefix = self._get_table_prefix(source)
-            self._execute(
-                f'''
-                INSERT OR REPLACE INTO {prefix}albums (
-                    id, title, creation_time
-                ) VALUES (?, ?, ?)
-                ''',
-                (album_data.id, album_data.title, album_data.creation_time)
-            )
+            sql = f'''
+                INSERT OR REPLACE INTO {prefix}albums (id, title, creation_time, path)
+                VALUES (?, ?, ?, ?)
+            '''
+            params = [
+                album_data.id,
+                album_data.title,
+                album_data.creation_time,
+                album_data.path if hasattr(album_data, 'path') else ''  # Use empty string if path not present
+            ]
+            self._execute(sql, params)
             self._commit()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to store album: {e}") from e
@@ -225,7 +235,7 @@ class DatabaseManager:
             if source == PhotoSource.LOCAL:
                 self._execute(
                     f'''
-                    SELECT id, title, creation_time, full_path
+                    SELECT id, title, creation_time, path
                     FROM {prefix}albums
                     WHERE title = ?
                     ''',
@@ -247,7 +257,7 @@ class DatabaseManager:
                         'id': row[0],
                         'title': row[1],
                         'creation_time': row[2],
-                        'full_path': row[3]
+                        'path': row[3]
                     }
                 else:
                     return {
@@ -275,19 +285,8 @@ class DatabaseManager:
         except sqlite3.OperationalError:
             return False
 
-    def search_photos(self, query: str, normalized_query: str) -> List[Tuple]:
-        """Search for photos in both local and Google Photos databases.
-
-        Args:
-            query: Search query
-            normalized_query: Normalized search query
-
-        Returns:
-            List of matching photos with their metadata
-        """
-        if not self.conn or not self.cursor:
-            self.connect()
-
+    def search_photos(self, filename_pattern: str, normalized_pattern: str) -> List[Tuple]:
+        """Search for photos in the database."""
         try:
             # Build union query for all sources
             queries = []
@@ -295,33 +294,24 @@ class DatabaseManager:
             
             for source in PhotoSource:
                 prefix = self._get_table_prefix(source)
-                table = f"{prefix}photos"
-
-                # Check if product_url column exists
-                has_product_url = self._has_column(table, "product_url")
-                product_url_select = "p.product_url" if has_product_url else "NULL as product_url"
-
                 queries.append(f'''
-                    SELECT
+                    SELECT 
                         '{source.value}' as source,
                         p.filename,
                         p.normalized_filename,
+                        p.creation_time,
+                        p.mime_type,
                         p.width,
                         p.height,
-                        p.creation_time,
-                        {product_url_select},
-                        GROUP_CONCAT(a.title, ' | ') as albums
+                        p.path
                     FROM {prefix}photos p
-                    LEFT JOIN {prefix}album_photos ap ON p.id = ap.photo_id
-                    LEFT JOIN {prefix}albums a ON ap.album_id = a.id
                     WHERE p.filename LIKE ? OR p.normalized_filename LIKE ?
-                    GROUP BY p.id
                 ''')
-                params.extend([f'%{query}%', f'%{normalized_query}%'])
+                params.extend([f'%{filename_pattern}%', f'%{normalized_pattern}%'])
 
             # Combine all queries with UNION ALL
             sql = ' UNION ALL '.join(queries)
-            self._execute(f'SELECT DISTINCT * FROM ({sql})', tuple(params))
+            self._execute(f'SELECT * FROM ({sql}) ORDER BY normalized_filename', tuple(params))
             return self.cursor.fetchall()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to search photos: {e}") from e
@@ -454,3 +444,38 @@ class DatabaseManager:
             
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to create indices: {e}") from e
+
+    def list_tables(self) -> List[str]:
+        """List all tables in the database."""
+        try:
+            self._execute("SELECT name FROM sqlite_master WHERE type='table'")
+            return [row[0] for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to list tables: {e}") from e
+
+    def count_photos(self, source: PhotoSource) -> int:
+        """Count photos in a specific source."""
+        try:
+            prefix = self._get_table_prefix(source)
+            self._execute(f"SELECT COUNT(*) FROM {prefix}photos")
+            return self.cursor.fetchone()[0]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to count photos: {e}") from e
+
+    def clear_source_data(self, source: PhotoSource) -> None:
+        """Clear all data for a specific source without dropping tables.
+        
+        Args:
+            source: The source to clear data for (GOOGLE or LOCAL)
+        """
+        try:
+            prefix = self._get_table_prefix(source)
+            
+            # Delete data in reverse order of dependencies
+            self._execute(f'DELETE FROM {prefix}album_photos')
+            self._execute(f'DELETE FROM {prefix}albums')
+            self._execute(f'DELETE FROM {prefix}photos')
+            
+            self._commit()
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to clear {source.name} data: {e}") from e

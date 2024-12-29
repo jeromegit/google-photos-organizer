@@ -9,7 +9,7 @@ class MediaItem:
     id: str
     filename: str
     mime_type: str
-    product_url: str
+    description: str | None = None
     metadata: Dict[str, Any]
 
 @dataclass

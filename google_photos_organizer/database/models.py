@@ -20,18 +20,18 @@ class BasePhotoData:
     mime_type: str
     width: int
     height: int
+    path: str
 
 
 @dataclass
 class GooglePhotoData(BasePhotoData):
     """Data class for Google Photos information."""
-    product_url: str
+    pass
 
 
 @dataclass
 class LocalPhotoData(BasePhotoData):
     """Data class for local photo information."""
-    full_path: str
     size: int
 
 
@@ -48,5 +48,5 @@ class LocalAlbumData:
     """Data class for local album information."""
     id: str
     title: str
-    full_path: str
+    path: str
     creation_time: str

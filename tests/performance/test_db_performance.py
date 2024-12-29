@@ -17,7 +17,7 @@ def create_test_photos(count: int) -> list[GooglePhotoData]:
             mime_type="image/jpeg",
             width=1920,
             height=1080,
-            product_url=f"http://example.com/photo{i}"
+            path=f"test_{i}.jpg"
         )
         for i in range(count)
     ]

@@ -1,19 +1,14 @@
 """Main module for Google Photos Organizer."""
 import os
-import pickle
 import re
 import argparse
 import logging
 import mimetypes
 from collections import defaultdict
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional
 from tabulate import tabulate
-
-from google_auth_oauthlib.flow import InstalledAppFlow
-from google.auth.transport.requests import Request
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
+from urllib.parse import urlparse, unquote
 
 from google_photos_organizer.database.models import (
     GoogleAlbumData,
@@ -26,53 +21,36 @@ from google_photos_organizer.database.db_manager import DatabaseManager
 from google_photos_organizer.utils.file_utils import (
     get_image_dimensions,
     normalize_filename,
-    get_file_metadata,
-    is_media_file
+    get_file_metadata
 )
+from google_photos_organizer.utils.auth import get_credentials
+from googleapiclient.discovery import build
 
 logger = logging.getLogger(__name__)
-
-# If modifying these scopes, delete the file token.pickle.
-SCOPES = ['https://www.googleapis.com/auth/photoslibrary']
 
 class GooglePhotosOrganizer:
     """Manages Google Photos organization and local photo scanning."""
 
-    def __init__(self, source_dir: str, dry_run: bool = False):
-        """Initialize the organizer.
-
-        Args:
-            source_dir: Directory to scan for photos
-            dry_run: If True, show operations without executing them
-        """
-        self.source_dir = source_dir
+    def __init__(self, local_photos_dir: str = '.', dry_run: bool = False):
+        """Initialize the organizer."""
+        self.local_photos_dir = local_photos_dir
+        self.dry_run = dry_run
         self.service = None
         self.duplicates = defaultdict(list)
         self.db = DatabaseManager('photos.db', dry_run=dry_run)
 
     def authenticate(self):
         """Authenticate with Google Photos API."""
-        creds = None
-        if os.path.exists('token.pickle'):
-            with open('token.pickle', 'rb') as token:
-                creds = pickle.load(token)
-        
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    'client_secret.json', SCOPES)
-                creds = flow.run_local_server(port=0)
-            
-            with open('token.pickle', 'wb') as token:
-                pickle.dump(creds, token)
-
-        self.service = build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
+        try:
+            creds = get_credentials('token.json', 'client_secret.json')
+            self.service = build('photoslibrary', 'v1', credentials=creds, static_discovery=False)
+        except Exception as e:
+            print(f"Error authenticating: {e}")
+            return None
 
     def get_album_title(self, path: str) -> str:
         """Convert directory path to album title using | as separator."""
-        relative_path = os.path.relpath(path, self.source_dir)
+        relative_path = os.path.relpath(path, self.local_photos_dir)
         return relative_path.replace(os.sep, '|')
 
     def extract_filename(self, url: str) -> str:
@@ -111,7 +89,6 @@ class GooglePhotosOrganizer:
                         'filename': item['filename'],
                         'mimeType': item['mimeType'],
                         'mediaMetadata': item.get('mediaMetadata', {}),
-                        'productUrl': item['productUrl']
                     }
                     duplicates[filename].append(item_info)
                 
@@ -119,8 +96,8 @@ class GooglePhotosOrganizer:
                 if not page_token:
                     break
                     
-            except HttpError as error:
-                print(f"Error fetching media items: {error}")
+            except Exception as e:
+                print(f"Error fetching media items: {e}")
                 break
         
         # Filter out non-duplicates
@@ -171,36 +148,10 @@ class GooglePhotosOrganizer:
         
         return albums_dict
 
-    def create_albums(self):
-        """Create albums in Google Photos based on directory structure."""
-        for root, _, files in os.walk(self.source_dir):
-            if files:  # Only create albums for directories containing files
-                album_title = self.get_album_title(root)
-                try:
-                    # Check if album already exists
-                    response = self.service.albums().list().execute()
-                    albums = response.get('albums', [])
-                    existing_album = next((album for album in albums 
-                                        if album['title'] == album_title), None)
-                    
-                    if not existing_album:
-                        # Create new album
-                        album_body = {
-                            'album': {'title': album_title}
-                        }
-                        self.service.albums().create(body=album_body).execute()
-                        print(f"Created album: {album_title}")
-                    else:
-                        print(f"Album already exists: {album_title}")
-
-                except HttpError as error:
-                    print(f"Error creating album {album_title}: {error}")
-
     def init_db(self):
         """Initialize the database tables."""
         if not self.db:
             self.db = DatabaseManager('photos.db')
-        self.db.init_database()
 
     def create_indices(self):
         """Create indices for better query performance."""
@@ -210,9 +161,9 @@ class GooglePhotosOrganizer:
         self.db.create_indices()
 
     def store_photo_metadata(self, photo_id: str, filename: str, normalized_filename: str, 
-                           mime_type: str, creation_time: str, width: int, height: int, 
-                           product_url: str = None):
+                           mime_type: str, creation_time: str, width: int, height: int):
         """Store photo metadata in the database."""
+        # For Google Photos, we don't have a local path since the photos are in the cloud
         photo_data = GooglePhotoData(
             id=photo_id,
             filename=filename,
@@ -221,7 +172,7 @@ class GooglePhotosOrganizer:
             creation_time=creation_time,
             width=width,
             height=height,
-            product_url=product_url
+            path=""  # Empty string since Google Photos are stored in the cloud
         )
         self.db.store_photo(photo_data, PhotoSource.GOOGLE)
 
@@ -239,7 +190,7 @@ class GooglePhotosOrganizer:
         self.db.store_album_photo(album_id, photo_id, PhotoSource.GOOGLE)
 
     def store_local_album_metadata(self, album_id: str, title: str, directory_path: str, 
-                                 creation_time: str):
+                                 creation_time: str) -> None:
         """Store local album metadata in the database.
 
         Args:
@@ -251,7 +202,7 @@ class GooglePhotosOrganizer:
         album_data = LocalAlbumData(
             id=album_id,
             title=title,
-            full_path=directory_path,
+            path=directory_path,
             creation_time=creation_time
         )
         self.db.store_album(album_data, PhotoSource.LOCAL)
@@ -264,7 +215,7 @@ class GooglePhotosOrganizer:
             id=photo_id,
             filename=filename,
             normalized_filename=normalized_filename,
-            full_path=file_path,
+            path=file_path,
             creation_time=creation_time,
             mime_type=mime_type,
             width=width,
@@ -277,11 +228,8 @@ class GooglePhotosOrganizer:
         """Store local album-photo relationship in the database."""
         self.db.store_album_photo(album_id, photo_id, PhotoSource.LOCAL)
 
-    def store_photos(self, max_photos=100000):
+    def store_photos(self, max_photos: Optional[int] = None) -> bool:
         """Store photos in SQLite database."""
-        if not self.db:
-            self.init_db()
-            
         stored_count = 0
         page_token = None
         
@@ -293,6 +241,8 @@ class GooglePhotosOrganizer:
                 ).execute()
                 
                 items = results.get('mediaItems', [])
+                if not items:
+                    break
                 
                 for item in items:
                     metadata = item.get('mediaMetadata', {})
@@ -308,25 +258,22 @@ class GooglePhotosOrganizer:
                         item.get('mimeType'),
                         creation_time,
                         width,
-                        height,
-                        item.get('productUrl')
+                        height
                     )
                     
                     stored_count += 1
                     if stored_count % 100 == 0:
                         print(f"Stored {stored_count} photos")
                     
-                    if stored_count >= max_photos:
-                        break
-                
-                if stored_count >= max_photos:
-                    break
+                    if max_photos and stored_count >= max_photos:
+                        print(f"\nReached maximum number of photos ({max_photos})")
+                        return True
                 
                 page_token = results.get('nextPageToken')
                 if not page_token:
                     break
             
-            print(f"Successfully stored {stored_count} photos")
+            print(f"\nSuccessfully stored {stored_count} photos")
             return True
             
         except Exception as e:
@@ -335,11 +282,8 @@ class GooglePhotosOrganizer:
             traceback.print_exc()
             return False
 
-    def store_albums(self):
+    def store_albums(self) -> Optional[List[dict]]:
         """Store albums in SQLite database."""
-        if not self.db:
-            self.init_db()
-            
         try:
             print("\nFetching albums...")
             albums_request = self.service.albums().list(pageSize=50)
@@ -360,41 +304,31 @@ class GooglePhotosOrganizer:
 
         except Exception as e:
             print(f"Error storing albums: {e}")
-            return []
+            import traceback
+            traceback.print_exc()
+            return None
 
-    def store_album_photos(self, albums):
+    def store_album_photos(self, albums: List[dict]) -> bool:
         """Store album-photo relationships in SQLite database."""
-        if not self.db:
-            self.init_db()
-            
         try:
             print("\nFetching album photos...")
-            for i, album in enumerate(albums, 1):
-                next_page_token = None
-                photos_in_album = 0
-                
-                while True:
-                    print(f"Fetching photos for album {album['id']} ({album.get('title', 'Untitled')})")
-                    media_request = self.service.mediaItems().search(
-                        body={'albumId': album['id'], 'pageToken': next_page_token}
-                    )
-                    media_response = media_request.execute()
-                    
-                    media_items = media_response.get('mediaItems', [])
-                    if not media_items:
-                        print(f"No media items found in album {album.get('title', 'Untitled')}")
-                        break
-                        
-                    for media_item in media_items:
-                        self.store_album_photo_relation(album['id'], media_item['id'])
-                        photos_in_album += 1
-                    
-                    next_page_token = media_response.get('nextPageToken')
-                    if not next_page_token:
-                        break
-                
-                print(f"Album {i}/{len(albums)}: {album.get('title', 'Untitled')} - {photos_in_album} photos")
             
+            for i, album in enumerate(albums, 1):
+                album_id = album['id']
+                
+                # Get photos in this album
+                request = self.service.mediaItems().search(
+                    body={'albumId': album_id, 'pageSize': 100}
+                )
+                response = request.execute()
+                media_items = response.get('mediaItems', [])
+                
+                for item in media_items:
+                    self.store_album_photo_relation(album_id, item['id'])
+                
+                print(f"Album photos progress: {i}/{len(albums)}")
+            
+            print("Successfully stored all album-photo relationships")
             return True
 
         except Exception as e:
@@ -403,23 +337,35 @@ class GooglePhotosOrganizer:
             traceback.print_exc()
             return False
 
-    def store_photos_and_albums(self, max_photos=100000) -> None:
-        """Store photos and albums in SQLite database."""
+    def store_photos_and_albums(self, max_photos: Optional[int] = None) -> None:
+        """Store Google Photos photos and albums in database."""
         if not self.service:
-            self.authenticate()
+            print("Google Photos service not initialized. Please authenticate first.")
+            return
 
-        if not self.db:
-            self.init_db()
+        # Initialize database for Google Photos only
+        self.db.init_database(source=PhotoSource.GOOGLE)
 
+        print("Scanning Google Photos...")
+        
         # Store photos first
-        stored_photos = self.store_photos(max_photos)
+        if not self.store_photos(max_photos):
+            print("Failed to store photos")
+            return
 
         # Then store albums
         stored_albums = self.store_albums()
+        if not stored_albums:
+            print("Failed to store albums")
+            return
 
         # Finally store album-photo relationships
-        if stored_albums:
-            self.store_album_photos(stored_albums)
+        if not self.store_album_photos(stored_albums):
+            print("Failed to store album-photo relationships")
+            return
+
+        print("\nDatabase summary:")
+        print(f"Google Photos: {self.db.count_photos(PhotoSource.GOOGLE)}")
 
         # Create indices for better query performance
         self.db.create_indices(source=PhotoSource.GOOGLE)
@@ -450,12 +396,12 @@ class GooglePhotosOrganizer:
         Returns:
             bool: True if directory is valid, False otherwise
         """
-        if not self.source_dir:
+        if not self.local_photos_dir:
             logger.error("No source directory specified")
             return False
 
-        if not os.path.exists(self.source_dir):
-            logger.error(f"Source directory {self.source_dir} does not exist")
+        if not os.path.exists(self.local_photos_dir):
+            logger.error(f"Source directory {self.local_photos_dir} does not exist")
             return False
 
         return True
@@ -502,7 +448,7 @@ class GooglePhotosOrganizer:
                 id=photo_id,
                 filename=file,
                 normalized_filename=normalize_filename(file),
-                full_path=file_path,
+                path=file_path,
                 creation_time=datetime.fromtimestamp(file_stat.st_mtime).isoformat(),
                 mime_type=mime_type,
                 width=width,
@@ -566,45 +512,31 @@ class GooglePhotosOrganizer:
         return processed_files, failed_files
 
     def scan_local_directory(self) -> bool:
-        """
-        Scan local directory and store media information in database.
-        
-        This method walks through the source directory, identifying media files
-        and organizing them into albums based on their directory structure.
-        
-        Returns:
-            bool: True if scan completed successfully, False otherwise
-        
-        Raises:
-            OSError: If there are filesystem-related errors
-            Exception: For other unexpected errors
-        """
+        """Scan local directory and store metadata in database."""
         if not self._validate_source_directory():
             return False
 
-        if not self.db:
-            self.init_db()
+        # Initialize database for local photos only
+        self.db.init_database(source=PhotoSource.LOCAL)
 
+        print(f"\nScanning local directory: {self.local_photos_dir}")
+        
         try:
             total_processed = 0
-            total_failed = 0
 
-            for root, _, files in os.walk(self.source_dir):
-                processed, failed = self._process_directory(root, files, self.source_dir)
+            # Process all files in source directory
+            for root, _, files in os.walk(self.local_photos_dir):
+                processed, failed = self._process_directory(root, files, self.local_photos_dir)
                 total_processed += processed
-                total_failed += failed
+                print(f"\rProcessed {total_processed} files...", end="", flush=True)
 
-            print(f"\nProcessed {total_processed} files")
-            if total_failed > 0:
-                print(f"Failed to process {total_failed} files")
-
-            # Create indices for better query performance
-            self.db.create_indices(source=PhotoSource.LOCAL)
-
+            print(f"\nFinished processing {total_processed} files")
             return True
 
         except Exception as e:
-            print(f"Error scanning directory: {e}")
+            print(f"Error scanning local directory: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def print_local_album_contents(self):
@@ -708,25 +640,29 @@ class GooglePhotosOrganizer:
                             desc_text = f" - {description}" if description else ""
                             print(f"  - {filename} (Created: {creation_time}){desc_text}")
 
-    def search_files(self, filename_pattern):
-        """Search for files in both local and Google Photos databases."""
-        if not self.db:
-            self.init_db()
-            
-        rows = []
+    def search_files(self, filename_pattern: str) -> None:
+        """Search for files in the database."""
         normalized_pattern = normalize_filename(filename_pattern)
-        
-        # Search both local and Google photos in one query
         photos = self.db.search_photos(filename_pattern, normalized_pattern)
+        rows = []
         rows.extend([(row[0], row[1], row[2], row[3], row[4], row[5], row[6]) for row in photos])
         
         # Sort all rows by normalized filename
         rows.sort(key=lambda x: x[2])
         
         if rows:
-            headers = ['Source', 'Filename', 'Normalized', 'Width', 'Height', 'Creation Time', 'Albums']
+            headers = [
+                "Source",
+                "Filename",
+                "Normalized",
+                "Creation Time",
+                "MIME Type",
+                "Width",
+                "Height",
+                "Path"
+            ]
             print(f"\nFiles containing '{filename_pattern}':")
-            print(tabulate(rows, headers=headers, tablefmt='grid'))
+            print(tabulate(rows, headers=headers, tablefmt="grid"))
             print(f"\nTotal files found: {len(rows)}")
         else:
             print(f"No files found containing '{filename_pattern}'")
@@ -736,31 +672,30 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='Google Photos Organizer')
     
     # Global arguments
-    parser.add_argument('--local-photos-dir', type=str, default='.', 
-                       help='Local directory containing photos to process (default: current directory)')
-    parser.add_argument('--dry-run', action='store_true', help='Show database operations without executing them')
-    
-    subparsers = parser.add_subparsers(dest='command', help='Commands')
+    parser.add_argument('--local-photos-dir', type=str, help='Local photos directory')
+    parser.add_argument('--dry-run', action='store_true', help='Run without making changes')
+
+    # Add subparsers for different commands
+    subparsers = parser.add_subparsers(dest='command', help='Commands', required=True)
 
     # Scan Google Photos command
-    scan_google_parser = subparsers.add_parser('scan-google', help='Scan Google Photos and store in database')
-    scan_google_parser.add_argument('--max-photos', type=int, default=100000, help='Maximum number of photos to process')
+    scan_google_parser = subparsers.add_parser('scan-google', help='Scan Google Photos')
+    scan_google_parser.add_argument('--max-photos', type=int, help='Maximum number of photos to process')
 
     # Compare command
-    compare_parser = subparsers.add_parser('compare', help='Compare local photos with Google Photos')
-    compare_parser.add_argument('--album-filter', type=str, help='Filter albums by name (case-insensitive)')
+    compare_parser = subparsers.add_parser('compare', help='Compare photos')
+    compare_parser.add_argument('--album-filter', type=str, help='Filter albums by name pattern')
 
     # Search command
-    search_parser = subparsers.add_parser('search', help='Search for files by filename')
-    search_parser.add_argument('filename', type=str, help='Search for files containing this string')
+    search_parser = subparsers.add_parser('search', help='Search photos')
+    search_parser.add_argument('pattern', type=str, help='Filename pattern to search for')
 
-    # Scan local command
-    scan_parser = subparsers.add_parser('scan-local', help='Scan local directory and store in database')
+    # Scan local directory command
+    scan_local_parser = subparsers.add_parser('scan-local', help='Scan local directory')
 
     # All command
-    all_parser = subparsers.add_parser('all', help='Scan both Google Photos and local directory, then compare')
-    all_parser.add_argument('--max-photos', type=int, default=100000, help='Maximum number of photos to process')
-    all_parser.add_argument('--album-filter', type=str, help='Filter albums by name (case-insensitive)')
+    all_parser = subparsers.add_parser('all', help='Run all commands')
+    all_parser.add_argument('--max-photos', type=int, help='Maximum number of photos to process')
 
     return parser.parse_args()
 
@@ -770,18 +705,18 @@ def main():
 
     if args.command == 'scan-google':
         organizer.authenticate()
-        organizer.store_photos_and_albums(args.max_photos)
+        organizer.store_photos_and_albums(max_photos=args.max_photos)
     elif args.command == 'scan-local':
         organizer.scan_local_directory()
     elif args.command == 'compare':
-        organizer.compare_with_google_photos(args.album_filter)
+        organizer.compare_with_google_photos(album_filter=args.album_filter)
     elif args.command == 'search':
-        organizer.search_files(args.filename)
+        organizer.search_files(args.pattern)
     elif args.command == 'all':
         organizer.authenticate()
-        organizer.store_photos_and_albums(args.max_photos)
+        organizer.store_photos_and_albums(max_photos=args.max_photos)
         organizer.scan_local_directory()
-        organizer.compare_with_google_photos(args.album_filter)
+        organizer.compare_with_google_photos()
     else:
         parser = argparse.ArgumentParser(description='Google Photos Organizer')
         parser.print_help()

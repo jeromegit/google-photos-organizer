@@ -54,6 +54,6 @@ def test_subcommand_help(command, capsys):
     elif command == 'compare':
         assert '--album-filter' in help_output
     elif command == 'search':
-        assert 'filename' in help_output
+        assert 'pattern' in help_output
     elif command == 'all':
         assert '--max-photos' in help_output

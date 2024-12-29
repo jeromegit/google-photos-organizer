@@ -1,6 +1,8 @@
 {
     "version": "0.2.0",
     "configurations": [
+        
+
 
         {
             "name": "Python: Poetry Debug Main",
@@ -20,6 +22,18 @@
             "request": "launch",
             "program": "${workspaceFolder}/google_photos_organizer/main.py",
             "args": ["scan-google", "--max-photos", "1000"],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },  
+        {
+            "name": "Python: Scan Local",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/google_photos_organizer/main.py",
+            "args": ["--local-photos-dir", "/Users/jerome/SMUGMUG_ALL", "scan-local"],
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
