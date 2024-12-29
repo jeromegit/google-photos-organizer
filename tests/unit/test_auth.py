@@ -63,9 +63,7 @@ def test_get_credentials_refresh():
         patch("os.path.exists") as mock_exists,
         patch.object(Credentials, "from_authorized_user_file") as mock_from_file,
         patch("builtins.open", mock_open()) as mock_file,
-        patch(
-            "google.auth.transport.requests.Request", return_value=create_autospec(Request)
-        ),
+        patch("google.auth.transport.requests.Request", return_value=create_autospec(Request)),
     ):
 
         mock_exists.return_value = True

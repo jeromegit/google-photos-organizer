@@ -564,7 +564,9 @@ class DatabaseManager:
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to get album by title: {e}") from e
 
-    def get_missing_files_in_album(self, local_album_id: str, google_album_id: str) -> List[Dict[str, Any]]:
+    def get_missing_files_in_album(
+        self, local_album_id: str, google_album_id: str
+    ) -> List[Dict[str, Any]]:
         """Get files that are in the local album but not in the Google album."""
         try:
             query = """
@@ -628,16 +630,16 @@ class DatabaseManager:
                 params.append(f"%{album_filter}%")
 
             query += " ORDER BY la.title, lp.normalized_filename"
-            
+
             self._execute(query, tuple(params) if params else None)
             return [
                 {
-                    'id': row[0],
-                    'filename': row[1],
-                    'normalized_filename': row[2],
-                    'width': row[3],
-                    'height': row[4],
-                    'album_title': row[5]
+                    "id": row[0],
+                    "filename": row[1],
+                    "normalized_filename": row[2],
+                    "width": row[3],
+                    "height": row[4],
+                    "album_title": row[5],
                 }
                 for row in self.cursor.fetchall()
             ]
@@ -664,25 +666,17 @@ class DatabaseManager:
                 FROM google_photos
                 WHERE normalized_filename = ?
                 """,
-                (normalized_filename,)
+                (normalized_filename,),
             )
             return [
-                {
-                    'id': row[0],
-                    'filename': row[1],
-                    'width': row[2],
-                    'height': row[3]
-                }
+                {"id": row[0], "filename": row[1], "width": row[2], "height": row[3]}
                 for row in self.cursor.fetchall()
             ]
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to find Google photos: {e}") from e
 
     def get_photo_by_filename_and_dimensions(
-        self,
-        normalized_filename: str,
-        width: int,
-        height: int
+        self, normalized_filename: str, width: int, height: int
     ) -> Optional[Dict[str, Any]]:
         """Get a photo by its normalized filename and dimensions."""
         try:
@@ -697,6 +691,4 @@ class DatabaseManager:
                 return dict(row)
             return None
         except sqlite3.Error as e:
-            raise DatabaseError(
-                f"Failed to get photo by filename and dimensions: {e}"
-            ) from e
+            raise DatabaseError(f"Failed to get photo by filename and dimensions: {e}") from e

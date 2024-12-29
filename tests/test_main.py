@@ -23,17 +23,16 @@ def test_main_help(capsys):
     assert "--dry-run" in help_output
     assert "positional arguments:" in help_output
     assert "optional arguments:" in help_output
-    
+
     # Verify all commands are present without enforcing order
-    expected_commands = {
-        "scan-google", "compare", "search",
-        "scan-local", "match", "all"
-    }
+    expected_commands = {"scan-google", "compare", "search", "scan-local", "match", "all"}
     for cmd in expected_commands:
         assert cmd in help_output
 
 
-@pytest.mark.parametrize("command", ["scan-google", "compare", "search", "scan-local", "match", "all"])
+@pytest.mark.parametrize(
+    "command", ["scan-google", "compare", "search", "scan-local", "match", "all"]
+)
 def test_subcommand_help(command, capsys):
     """Test that each subcommand's help message is displayed correctly."""
     with pytest.raises(SystemExit) as exc_info:

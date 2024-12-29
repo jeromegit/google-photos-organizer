@@ -1,13 +1,12 @@
 """Unit tests for GooglePhotosOrganizer class."""
 
-import os
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from google_photos_organizer.main import GooglePhotosOrganizer
 from google_photos_organizer.database.models import PhotoSource
+from google_photos_organizer.main import GooglePhotosOrganizer
 
 
 @pytest.fixture
@@ -29,11 +28,11 @@ def mock_service():
                 "mediaMetadata": {
                     "creationTime": "2024-01-01T00:00:00Z",
                     "width": "1920",
-                    "height": "1080"
-                }
+                    "height": "1080",
+                },
             }
         ],
-        "nextPageToken": None
+        "nextPageToken": None,
     }
     return service
 
@@ -59,7 +58,7 @@ def test_store_photo_metadata(organizer):
         mime_type=mime_type,
         creation_time=creation_time,
         width=width,
-        height=height
+        height=height,
     )
 
     # Verify the database call
@@ -104,7 +103,7 @@ def test_store_local_photo_metadata(organizer):
         width=width,
         height=height,
         mime_type=mime_type,
-        size=size
+        size=size,
     )
 
     # Verify the database call
@@ -133,18 +132,20 @@ def test_scan_local_directory(mock_normalize, mock_dimensions, mock_metadata, or
     # Mock os.walk to return test files
     test_files = [
         ("root", ["dir1"], ["test1.jpg", "test2.png", "ignore.txt"]),
-        ("root/dir1", [], ["test3.jpg"])
+        ("root/dir1", [], ["test3.jpg"]),
     ]
-    with patch("os.walk", return_value=test_files), \
-         patch("os.path.exists", return_value=True), \
-         patch("os.stat") as mock_stat, \
-         patch("os.path.join", side_effect=lambda *args: "/".join(args)):
+    with (
+        patch("os.walk", return_value=test_files),
+        patch("os.path.exists", return_value=True),
+        patch("os.stat") as mock_stat,
+        patch("os.path.join", side_effect=lambda *args: "/".join(args)),
+    ):
 
         # Mock file metadata
         mock_metadata.return_value = {
             "creation_time": "2024-01-01T00:00:00Z",
             "mime_type": "image/jpeg",
-            "size": 1024
+            "size": 1024,
         }
         mock_dimensions.return_value = (1920, 1080)
         mock_normalize.side_effect = lambda x: x.replace(".", "_")
@@ -192,7 +193,7 @@ def test_store_photos_no_auth(organizer):
     """Test storing photos without authentication."""
     # Don't set the service
     organizer.service = None
-    
+
     # Run the store photos function
     result = organizer.store_photos()
 
@@ -204,7 +205,9 @@ def test_store_photos_api_error(organizer, mock_service):
     """Test storing photos with API error."""
     # Set up the mock service to raise an error
     organizer.service = mock_service
-    organizer.service.mediaItems.return_value.list.return_value.execute.side_effect = Exception("API Error")
+    organizer.service.mediaItems.return_value.list.return_value.execute.side_effect = Exception(
+        "API Error"
+    )
     organizer.db = MagicMock()
 
     # Run the store photos function
