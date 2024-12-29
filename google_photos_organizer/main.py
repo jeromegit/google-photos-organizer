@@ -674,6 +674,7 @@ class GooglePhotosOrganizer:
                 ],
                 tablefmt="grid"
             ))
+            print(f"\nTotal photos found: {len(rows)}")
         else:
             print(f"No photos found matching pattern: {filename_pattern}")
 
