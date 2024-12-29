@@ -5,11 +5,12 @@ import mimetypes
 import os
 import re
 from datetime import datetime
-from typing import Dict, Optional, Tuple, Any
+from typing import Any, Dict, Optional, Tuple
 
 from PIL import Image
 
 logger = logging.getLogger(__name__)
+
 
 def is_media_file(filename: str) -> bool:
     """Check if a file is a media file based on its extension.
@@ -22,10 +23,22 @@ def is_media_file(filename: str) -> bool:
     """
     # List of supported media file extensions
     media_extensions = {
-        '.jpg', '.jpeg', '.png', '.gif', '.bmp', '.tiff', '.webp',  # Images
-        '.mp4', '.mov', '.avi', '.wmv', '.flv', '.webm'  # Videos
+        ".jpg",
+        ".jpeg",
+        ".png",
+        ".gif",
+        ".bmp",
+        ".tiff",
+        ".webp",  # Images
+        ".mp4",
+        ".mov",
+        ".avi",
+        ".wmv",
+        ".flv",
+        ".webm",  # Videos
     }
     return os.path.splitext(filename)[1].lower() in media_extensions
+
 
 def normalize_filename(filename: str) -> str:
     """Normalize filename for comparison.
@@ -39,8 +52,9 @@ def normalize_filename(filename: str) -> str:
     # Remove extension and convert to lowercase
     name = os.path.splitext(filename)[0].lower()
     # Remove special characters and spaces
-    name = re.sub(r'[^a-z0-9]', '', name)
+    name = re.sub(r"[^a-z0-9]", "", name)
     return name
+
 
 def get_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
     """Get metadata for a file.
@@ -60,19 +74,20 @@ def get_file_metadata(file_path: str) -> Optional[Dict[str, Any]]:
 
         mime_type, _ = mimetypes.guess_type(file_path)
         width, height = get_image_dimensions(file_path)
-        
+
         return {
-            'filename': os.path.basename(file_path),
-            'creation_time': creation_time.isoformat(),
-            'size': stat.st_size,
-            'modified': datetime.fromtimestamp(stat.st_mtime).isoformat(),
-            'mime_type': mime_type or 'application/octet-stream',
-            'width': width,
-            'height': height
+            "filename": os.path.basename(file_path),
+            "creation_time": creation_time.isoformat(),
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "mime_type": mime_type or "application/octet-stream",
+            "width": width,
+            "height": height,
         }
     except OSError as e:
         logger.warning("Failed to get metadata for %s: %s", file_path, str(e))
         return None
+
 
 def get_image_dimensions(file_path: str) -> Tuple[int, int]:
     """Get dimensions of an image file.

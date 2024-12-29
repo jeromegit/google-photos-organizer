@@ -1,6 +1,9 @@
 """Configuration for unit tests."""
-import pytest
+
 import logging
+
+import pytest
+
 
 @pytest.fixture(autouse=True)
 def setup_logging():

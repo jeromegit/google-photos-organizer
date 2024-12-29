@@ -1,8 +1,11 @@
 """Performance tests for database operations."""
-import pytest
+
 from datetime import datetime
-from google_photos_organizer.database.models import GooglePhotoData, PhotoSource
+
+import pytest
+
 from google_photos_organizer.database.db_manager import DatabaseManager
+from google_photos_organizer.database.models import GooglePhotoData, PhotoSource
 
 
 def create_test_photos(count: int) -> list[GooglePhotoData]:
@@ -17,7 +20,7 @@ def create_test_photos(count: int) -> list[GooglePhotoData]:
             mime_type="image/jpeg",
             width=1920,
             height=1080,
-            path=f"test_{i}.jpg"
+            path=f"test_{i}.jpg",
         )
         for i in range(count)
     ]
