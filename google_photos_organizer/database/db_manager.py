@@ -490,20 +490,213 @@ class DatabaseManager:
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to count photos: {e}") from e
 
-    def clear_source_data(self, source: PhotoSource) -> None:
-        """Clear all data for a specific source without dropping tables.
+    def clear_data(self, source: PhotoSource) -> None:
+        """Clear all data for a given source.
 
         Args:
-            source: The source to clear data for (GOOGLE or LOCAL)
+            source: Source to clear data for
         """
         try:
-            prefix = self._get_table_prefix(source)
-
-            # Delete data in reverse order of dependencies
-            self._execute(f"DELETE FROM {prefix}album_photos")
-            self._execute(f"DELETE FROM {prefix}albums")
-            self._execute(f"DELETE FROM {prefix}photos")
-
-            self._commit()
+            if source == PhotoSource.GOOGLE:
+                self._execute("DELETE FROM google_photos")
+                self._execute("DELETE FROM albums")
+                self._execute("DELETE FROM album_photos")
+            else:
+                self._execute("DELETE FROM local_photos")
+                self._execute("DELETE FROM local_albums")
+                self._execute("DELETE FROM local_album_photos")
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to clear {source.name} data: {e}") from e
+
+    def get_local_albums(self) -> List[Dict[str, Any]]:
+        """Get all local albums."""
+        try:
+            query = "SELECT * FROM local_albums"
+            self._execute(query)
+            return [dict(row) for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get local albums: {e}") from e
+
+    def get_photos_in_local_album(self, album_id: str) -> List[Dict[str, Any]]:
+        """Get all photos in a local album."""
+        try:
+            query = """
+                SELECT p.* FROM local_photos p
+                JOIN local_album_photos ap ON p.id = ap.photo_id
+                WHERE ap.album_id = ?
+            """
+            self._execute(query, (album_id,))
+            return [dict(row) for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get photos in local album: {e}") from e
+
+    def get_photo_count_in_local_album(self, album_id: str) -> int:
+        """Get number of photos in a local album."""
+        try:
+            query = """
+                SELECT COUNT(*) FROM local_album_photos
+                WHERE album_id = ?
+            """
+            self._execute(query, (album_id,))
+            return self.cursor.fetchone()[0]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get photo count in local album: {e}") from e
+
+    def get_photo_count_in_album(self, album_id: str) -> int:
+        """Get number of photos in a Google album."""
+        try:
+            query = """
+                SELECT COUNT(*) FROM album_photos
+                WHERE album_id = ?
+            """
+            self._execute(query, (album_id,))
+            return self.cursor.fetchone()[0]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get photo count in album: {e}") from e
+
+    def get_album_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+        """Get a Google album by its title."""
+        try:
+            query = "SELECT * FROM albums WHERE title = ?"
+            self._execute(query, (title,))
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get album by title: {e}") from e
+
+    def get_missing_files_in_album(self, local_album_id: str, google_album_id: str) -> List[Dict[str, Any]]:
+        """Get files that are in the local album but not in the Google album."""
+        try:
+            query = """
+                SELECT p.* FROM local_photos p
+                JOIN local_album_photos lap ON p.id = lap.photo_id
+                LEFT JOIN album_photos ap ON p.id = ap.photo_id
+                WHERE lap.album_id = ? AND ap.album_id != ?
+            """
+            self._execute(query, (local_album_id, google_album_id))
+            return [dict(row) for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get missing files in album: {e}") from e
+
+    def get_photos_in_album(self, album_id: str) -> List[Dict[str, Any]]:
+        """Get all photos in a Google album."""
+        try:
+            query = """
+                SELECT p.* FROM google_photos p
+                JOIN album_photos ap ON p.id = ap.photo_id
+                WHERE ap.album_id = ?
+            """
+            self._execute(query, (album_id,))
+            return [dict(row) for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get photos in album: {e}") from e
+
+    def get_google_albums(self) -> List[Dict[str, Any]]:
+        """Get all Google albums."""
+        try:
+            query = "SELECT * FROM albums"
+            self._execute(query)
+            return [dict(row) for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get Google albums: {e}") from e
+
+    def get_local_photos(self, album_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get local photos, optionally filtered by album title.
+
+        Args:
+            album_filter: Optional album title to filter by
+
+        Returns:
+            List of dictionaries containing local photo data
+        """
+        try:
+            query = """
+                SELECT DISTINCT
+                    lp.id,
+                    lp.filename,
+                    lp.normalized_filename,
+                    lp.width,
+                    lp.height,
+                    la.title as album_title
+                FROM local_photos lp
+                JOIN local_album_photos lap ON lp.id = lap.photo_id
+                JOIN local_albums la ON lap.album_id = la.id
+            """
+            params = []
+            if album_filter:
+                query += " WHERE la.title LIKE ?"
+                params.append(f"%{album_filter}%")
+
+            query += " ORDER BY la.title, lp.normalized_filename"
+            
+            self._execute(query, tuple(params) if params else None)
+            return [
+                {
+                    'id': row[0],
+                    'filename': row[1],
+                    'normalized_filename': row[2],
+                    'width': row[3],
+                    'height': row[4],
+                    'album_title': row[5]
+                }
+                for row in self.cursor.fetchall()
+            ]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to get local photos: {e}") from e
+
+    def find_google_photos_by_filename(self, normalized_filename: str) -> List[Dict[str, Any]]:
+        """Find Google photos matching a normalized filename.
+
+        Args:
+            normalized_filename: Normalized filename to match
+
+        Returns:
+            List of matching Google photo data
+        """
+        try:
+            self._execute(
+                """
+                SELECT
+                    id,
+                    filename,
+                    width,
+                    height
+                FROM google_photos
+                WHERE normalized_filename = ?
+                """,
+                (normalized_filename,)
+            )
+            return [
+                {
+                    'id': row[0],
+                    'filename': row[1],
+                    'width': row[2],
+                    'height': row[3]
+                }
+                for row in self.cursor.fetchall()
+            ]
+        except sqlite3.Error as e:
+            raise DatabaseError(f"Failed to find Google photos: {e}") from e
+
+    def get_photo_by_filename_and_dimensions(
+        self,
+        normalized_filename: str,
+        width: int,
+        height: int
+    ) -> Optional[Dict[str, Any]]:
+        """Get a photo by its normalized filename and dimensions."""
+        try:
+            query = """
+                SELECT * FROM google_photos
+                WHERE normalized_filename = ?
+                AND width = ? AND height = ?
+            """
+            self._execute(query, (normalized_filename, width, height))
+            row = self.cursor.fetchone()
+            if row:
+                return dict(row)
+            return None
+        except sqlite3.Error as e:
+            raise DatabaseError(
+                f"Failed to get photo by filename and dimensions: {e}"
+            ) from e
