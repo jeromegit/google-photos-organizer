@@ -380,6 +380,7 @@ class GooglePhotosOrganizer:
                 "dimensions": f"{local_photo['width']}x{local_photo['height']}",
                 "google_filename": "",  # Default empty for unmatched photos
                 "google_id": "",  # Default empty for unmatched photos
+                "google_album": "",  # Default empty for unmatched photos
             }
 
             # Find Google photos with matching normalized filename
@@ -406,6 +407,7 @@ class GooglePhotosOrganizer:
                 google_photo = google_matches[0]
                 result["google_filename"] = google_photo["filename"]
                 result["google_id"] = google_photo["id"]
+                result["google_album"] = google_photo["album_title"]
 
             results.append(result)
 

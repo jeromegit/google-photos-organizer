@@ -656,23 +656,32 @@ class DatabaseManager:
             normalized_filename: Normalized filename to match
 
         Returns:
-            List of matching Google photo data
+            List of matching Google photo data including album information
         """
         try:
             self._execute(
                 """
                 SELECT
-                    id,
-                    filename,
-                    width,
-                    height
-                FROM google_photos
-                WHERE normalized_filename = ?
+                    gp.id,
+                    gp.filename,
+                    gp.width,
+                    gp.height,
+                    ga.title as album_title
+                FROM google_photos gp
+                LEFT JOIN google_album_photos gap ON gp.id = gap.photo_id
+                LEFT JOIN google_albums ga ON gap.album_id = ga.id
+                WHERE gp.normalized_filename = ?
                 """,
                 (normalized_filename,),
             )
             return [
-                {"id": row[0], "filename": row[1], "width": row[2], "height": row[3]}
+                {
+                    "id": row[0],
+                    "filename": row[1],
+                    "width": row[2],
+                    "height": row[3],
+                    "album_title": row[4] if row[4] else "",
+                }
                 for row in self.cursor.fetchall()
             ]
         except sqlite3.Error as e:
