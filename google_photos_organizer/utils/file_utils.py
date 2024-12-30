@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 from PIL import Image
 
@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class FileMetadata:
-    """File metadata."""
+    """Class representing file metadata."""
     filename: str
     creation_time: str
     size: int

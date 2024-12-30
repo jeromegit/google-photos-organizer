@@ -74,12 +74,12 @@ def test_get_file_metadata_valid(mock_mime, mock_img_open, mock_stat, mock_isfil
 
     assert metadata is not None
     assert metadata.filename == "test.jpg"
+    assert metadata.creation_time == test_time.isoformat()
+    assert metadata.size == 1024
+    assert metadata.modified == test_time.isoformat()
     assert metadata.mime_type == "image/jpeg"
     assert metadata.width == 100
     assert metadata.height == 200
-    assert metadata.creation_time == test_time.isoformat()
-    assert metadata.modified == test_time.isoformat()
-    assert metadata.size == 1024
 
 
 @patch("os.path.isfile")

@@ -3,10 +3,10 @@
 import argparse
 import logging
 import os
-import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import unquote, urlparse
+import re
 
 from googleapiclient.discovery import Resource
 from tabulate import tabulate
@@ -21,9 +21,9 @@ from google_photos_organizer.database.models import (
 )
 from google_photos_organizer.utils.auth import authenticate_google_photos
 from google_photos_organizer.utils.file_utils import (
+    FileMetadata,
     get_file_metadata,
     get_image_dimensions,
-    is_media_file,
     normalize_filename,
 )
 
@@ -310,65 +310,6 @@ class GooglePhotosOrganizer:
                     f"{dimensions}, Type: {mime_type})"
                 )
 
-    def compare_with_google_photos(self) -> None:
-        """Compare local photos with Google Photos and identify matches."""
-        print("\nComparing local photos with Google Photos...")
-
-        # Get all local albums
-        local_albums = self.db.get_local_albums()
-        if not local_albums:
-            print("No local albums found")
-            return
-
-        # Print summary of local albums
-        print("\nLocal albums:")
-        for album in local_albums:
-            total_photos = self.db.get_photo_count_in_local_album(album["id"])
-            print(f"- {album['title']}: {total_photos} photos")
-
-        # Get all Google albums
-        google_albums = self.db.get_google_albums()
-        if not google_albums:
-            print("No Google albums found")
-            return
-
-        # Print summary of Google albums
-        print("\nGoogle albums:")
-        for album in google_albums:
-            total_photos = self.db.get_photo_count_in_album(album["id"])
-            print(f"- {album['title']}: {total_photos} photos")
-
-        # Compare photos in each local album
-        print("\nComparing photos in each album:")
-        for local_album in local_albums:
-            album_title = local_album["title"]
-            print(f"\nAnalyzing album: {album_title}")
-
-            # Find matching Google album by title
-            google_album = self.db.get_album_by_title(album_title)
-            if not google_album:
-                print(f"No matching Google album found for: {album_title}")
-                continue
-
-            # Get photos from both albums
-            local_photos = self.db.get_photos_in_local_album(local_album["id"])
-            google_photos = self.db.get_photos_in_album(google_album["id"])
-
-            # Compare photo counts
-            local_count = len(local_photos)
-            google_count = len(google_photos)
-            print(f"Local photos: {local_count}")
-            print(f"Google photos: {google_count}")
-
-            # Find missing files
-            missing_files = self.db.get_missing_files_in_album(
-                local_album["id"], google_album["id"]
-            )
-            if missing_files:
-                print(f"\nMissing files in Google Photos ({len(missing_files)}):")
-                for file in missing_files:
-                    print(f"- {file['filename']}")
-
     def search_files(self, filename_pattern: str) -> None:
         """Search for files in the database."""
         normalized_pattern = normalize_filename(filename_pattern)
@@ -508,11 +449,12 @@ class GooglePhotosOrganizer:
             for filename in files:
                 try:
                     filepath = os.path.join(root, filename)
-                    # Only process media files
-                    if not is_media_file(filename):
-                        continue
                     metadata = get_file_metadata(filepath)
                     if not metadata:
+                        continue
+
+                    # Skip non-image files
+                    if not metadata.mime_type.startswith("image/"):
                         continue
 
                     width, height = get_image_dimensions(filepath)
@@ -520,20 +462,18 @@ class GooglePhotosOrganizer:
                     # Generate unique ID for photo
                     photo_id = filepath
 
-                    # Store photo metadata
-                    self.store_local_photo_metadata(
-                        LocalPhotoData(
-                            id=photo_id,
-                            filename=filename,
-                            normalized_filename=normalize_filename(filename),
-                            path=filepath,
-                            creation_time=metadata.creation_time,
-                            width=width,
-                            height=height,
-                            mime_type=metadata.mime_type,
-                            size=metadata.size,
-                        )
+                    photo_data = LocalPhotoData(
+                        id=photo_id,
+                        filename=filename,
+                        normalized_filename=normalize_filename(filename),
+                        path=filepath,
+                        creation_time=metadata.creation_time,
+                        width=width,
+                        height=height,
+                        mime_type=metadata.mime_type,
+                        size=metadata.size,
                     )
+                    self.store_local_photo_metadata(photo_data)
 
                     # Store album-photo relation
                     self.store_local_album_photo_relation(album_id, photo_id)
@@ -542,7 +482,7 @@ class GooglePhotosOrganizer:
                     if total_files_processed % 100 == 0:
                         print(
                             f"Processed {total_files_processed} files across "
-                            f"{total_albums_processed} albums..."
+                            f"{total_albums_processed} albums."
                         )
 
                 except Exception as e:  # pylint: disable=broad-except
@@ -573,12 +513,12 @@ def parse_arguments():
     )
 
     # Scan local directory command
-    subparsers.add_parser("scan-local", help="Scan local directory")
-
-    # Compare command
-    compare_parser = subparsers.add_parser("compare", help="Compare local and Google Photos")
-    compare_parser.add_argument(
-        "--album-filter", help="Filter by album title (supports glob patterns)", default=None
+    scan_local_parser = subparsers.add_parser("scan-local", help="Scan local directory")
+    scan_local_parser.add_argument(
+        "--local-photos-dir",
+        type=str,
+        help="Local photos directory",
+        default="."
     )
 
     # Search command
@@ -617,9 +557,6 @@ def main() -> None:
             return
         organizer.scan_local_directory()
 
-    elif args.command == "compare":
-        organizer.compare_with_google_photos()
-
     elif args.command == "search":
         organizer.search_files(args.pattern)
 
@@ -633,7 +570,6 @@ def main() -> None:
         organizer.authenticate()
         organizer.store_photos_and_albums(max_photos=args.max_photos)
         organizer.scan_local_directory()
-        organizer.compare_with_google_photos()
     else:
         parser = argparse.ArgumentParser(description="Google Photos Organizer")
         parser.print_help()

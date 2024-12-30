@@ -25,13 +25,13 @@ def test_main_help(capsys):
     assert "optional arguments:" in help_output
 
     # Verify all commands are present without enforcing order
-    expected_commands = {"scan-google", "compare", "search", "scan-local", "match", "all"}
+    expected_commands = {"scan-google", "search", "scan-local", "match", "all"}
     for cmd in expected_commands:
         assert cmd in help_output
 
 
 @pytest.mark.parametrize(
-    "command", ["scan-google", "compare", "search", "scan-local", "match", "all"]
+    "command", ["scan-google", "search", "scan-local", "match", "all"]
 )
 def test_subcommand_help(command, capsys):
     """Test that each subcommand's help message is displayed correctly."""
@@ -45,15 +45,14 @@ def test_subcommand_help(command, capsys):
 
     # Verify command-specific help content
     assert command in help_output
+    assert "-h, --help" in help_output
 
     # Verify command-specific arguments
     if command == "scan-google":
         assert "--max-photos" in help_output
-    elif command == "compare":
-        assert "--album-filter" in help_output
     elif command == "search":
         assert "pattern" in help_output
     elif command == "match":
         assert "--album-filter" in help_output
-    elif command == "all":
-        assert "-h, --help" in help_output  # Just check for basic help flag
+    elif command == "scan-local":
+        assert "--local-photos-dir" in help_output

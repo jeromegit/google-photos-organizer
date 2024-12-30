@@ -1,14 +1,12 @@
 """Unit tests for GooglePhotosOrganizer class."""
 
+import os
 from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from google_photos_organizer.database.models import PhotoSource, GooglePhotoData, LocalPhotoData
-from google_photos_organizer.main import GooglePhotosOrganizer
-from google_photos_organizer.utils.file_utils import FileMetadata
-
+from google_photos_organizer.database.models import GooglePhotoData, LocalPhotoData, PhotoSource
+from google_photos_organizer.main import GooglePhotosOrganizer, FileMetadata
 
 @pytest.fixture
 def organizer():
@@ -51,7 +49,7 @@ def test_store_photo_metadata(organizer):
     # Mock the database manager
     organizer.db = MagicMock()
 
-    # Store the photo metadata
+    # Create photo data
     photo_data = GooglePhotoData(
         id=photo_id,
         filename=filename,
@@ -62,7 +60,9 @@ def test_store_photo_metadata(organizer):
         height=height,
         path=photo_id
     )
-    organizer.store_photo_metadata(photo_data, PhotoSource.GOOGLE)
+
+    # Store the photo metadata
+    organizer.store_photo_metadata(photo_data=photo_data, source=PhotoSource.GOOGLE)
 
     # Verify the database call
     organizer.db.store_photo.assert_called_once()
@@ -96,18 +96,20 @@ def test_store_local_photo_metadata(organizer):
     # Mock the database manager
     organizer.db = MagicMock()
 
-    # Store the photo metadata
+    # Create photo data
     photo_data = LocalPhotoData(
         id=photo_id,
         filename=filename,
         normalized_filename=normalized_filename,
-        mime_type=mime_type,
+        path=path,
         creation_time=creation_time,
         width=width,
         height=height,
-        path=path,
+        mime_type=mime_type,
         size=size
     )
+
+    # Store the photo metadata
     organizer.store_local_photo_metadata(photo_data)
 
     # Verify the database call
@@ -144,16 +146,29 @@ def test_scan_local_directory(mock_normalize, mock_dimensions, mock_metadata, or
         patch("os.stat") as mock_stat,
         patch("os.path.join", side_effect=lambda *args: "/".join(args)),
     ):
-        # Create a metadata object with attributes
-        mock_metadata.return_value = FileMetadata(
-            filename="test.jpg",
-            creation_time="2024-01-01T00:00:00Z",
-            size=1024,
-            modified="2024-01-01T00:00:00Z",
-            mime_type="image/jpeg",
-            width=1920,
-            height=1080
-        )
+        # Mock file metadata
+        def get_mock_metadata(filepath):
+            if filepath.endswith(".txt"):
+                return FileMetadata(
+                    filename=os.path.basename(filepath),
+                    creation_time="2024-01-01T00:00:00Z",
+                    size=1024,
+                    modified="2024-01-01T00:00:00Z",
+                    mime_type="text/plain",
+                    width=0,
+                    height=0,
+                )
+            return FileMetadata(
+                filename=os.path.basename(filepath),
+                creation_time="2024-01-01T00:00:00Z",
+                size=1024,
+                modified="2024-01-01T00:00:00Z",
+                mime_type="image/jpeg",
+                width=1920,
+                height=1080,
+            )
+
+        mock_metadata.side_effect = get_mock_metadata
         mock_dimensions.return_value = (1920, 1080)
         mock_normalize.side_effect = lambda x: x.replace(".", "_")
         mock_stat.return_value.st_mtime = datetime.now().timestamp()
@@ -165,9 +180,9 @@ def test_scan_local_directory(mock_normalize, mock_dimensions, mock_metadata, or
         organizer.scan_local_directory()
 
         # Verify that only image files were processed
-        assert mock_metadata.call_count == 3  # test1.jpg, test2.png, test3.jpg
-        assert mock_dimensions.call_count == 3
-        assert organizer.db.store_photo.call_count == 3
+        assert mock_metadata.call_count == 4  # test1.jpg, test2.png, ignore.txt, test3.jpg
+        assert mock_dimensions.call_count == 3  # Only image files get dimensions
+        assert organizer.db.store_photo.call_count == 3  # Only image files are stored
         assert organizer.db.store_album.call_count == 2  # root and dir1
 
 
