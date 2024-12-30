@@ -560,10 +560,16 @@ class DatabaseManager:
     def get_album_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Get a Google album by its title."""
         try:
-            query = "SELECT * FROM albums WHERE title = ?"
+            query = "SELECT * FROM google_albums WHERE title = ?"
             self._execute(query, (title,))
             row = self.cursor.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+
+            # Get column names from cursor description
+            columns = [desc[0] for desc in self.cursor.description]
+            return dict(zip(columns, row))
+
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to get album by title: {e}") from e
 

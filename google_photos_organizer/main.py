@@ -413,19 +413,75 @@ class GooglePhotosOrganizer:
 
         return results
 
-    def print_matching_photos(self, album_filter: Optional[str] = None) -> None:
+    def create_google_album_if_not_exists(self, album_title: str) -> Optional[GoogleAlbumData]:
+        """Create a Google Photos album if it doesn't exist.
+
+        Args:
+            album_title: Title of the album to create
+
+        Returns:
+            GoogleAlbumData if album was created or found, None if creation failed
+        """
+        # Check if album already exists
+        existing_album = self.db.get_album_by_title(album_title)
+        if existing_album:
+            return existing_album
+
+        # Create new album
+        try:
+            if not self.service:
+                self.authenticate()
+
+            album_body = {"album": {"title": album_title}}
+            response = self.service.albums().create(body=album_body).execute()
+
+            # Create album data
+            album_data = GoogleAlbumData(
+                id=response["id"], title=album_title, creation_time=datetime.now().isoformat()
+            )
+
+            # Store in database
+            self.store_album_metadata(album_data)
+            print(f"Successfully created album: {album_title}")
+
+            return album_data
+
+        except Exception as e:
+            logging.error("Failed to create Google Photos album: %s", e)
+            #            print(f"Failed to create album: {album_title}")
+            return None
+
+    def print_matching_photos(
+        self, album_filter: Optional[str] = None, upload: bool = False
+    ) -> None:
         """Find and print matching photos between local and Google Photos.
 
         Args:
             album_filter: Optional album title to filter local photos by
+            upload: If True, create and upload local albums that don't exist in Google Photos
         """
         results = self.find_matching_photos(album_filter)
-        if results:
-            print("\nMatching photos:")
-            print(tabulate(results, headers="keys", tablefmt="psql"))
-            print(f"\nFound {len(results)} matches")
-        else:
+        if not results:
             print("No matches found")
+            return
+
+        # Group results by album
+        albums = {}
+        for result in results:
+            album_title = result["album_title"]
+            if album_title not in albums:
+                albums[album_title] = []
+            albums[album_title].append(result)
+
+        print("\nMatching photos:")
+        print(tabulate(results, headers="keys", tablefmt="psql"))
+        print(f"\nFound {len(results)} matches")
+
+        if upload:
+            print("\nChecking for albums to create...")
+            for album_title, photos in albums.items():
+                if not any(photo["google_album"] for photo in photos):
+                    self.create_google_album_if_not_exists(album_title)
 
     def scan_local_directory(self) -> None:
         """Scan local directory and store information in database."""
@@ -490,7 +546,8 @@ class GooglePhotosOrganizer:
                     total_files += 1
                     current_album_files += 1
                     print(
-                        f"\rProcessed Total: {total_files:5d} files across {total_albums:5d} albums with {current_album_files:5d} files in {album_title:50s} ",
+                        f"\rProcessed Total: {total_files:5d} files across {total_albums:5d} albums"
+                        + f" with {current_album_files:5d} files in {album_title:50s} ",
                         end="",
                         flush=True,
                     )
@@ -541,6 +598,11 @@ def parse_arguments():
     match_parser.add_argument(
         "--album-filter", help="Filter by album title (supports glob patterns)", default=None
     )
+    match_parser.add_argument(
+        "--upload",
+        action="store_true",
+        help="Create and upload local albums that don't exist in Google Photos",
+    )
 
     # All command
     subparsers.add_parser("all", help="Run all commands")
@@ -570,7 +632,7 @@ def main() -> None:
         organizer.search_files(args.pattern)
 
     elif args.command == "match":
-        organizer.print_matching_photos(args.album_filter)
+        organizer.print_matching_photos(args.album_filter, args.upload)
 
     elif args.command == "all":
         if not args.local_photos_dir:

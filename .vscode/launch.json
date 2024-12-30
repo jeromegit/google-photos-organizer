@@ -41,6 +41,18 @@
             }
         },  
         {
+            "name": "Python: match with --upload",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/google_photos_organizer/main.py",
+            "args": ["match", "--album-filter", "Feb2005", "--upload"],
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            }
+        },  
+        {
             "name": "Python: Compare with Filter",
             "type": "debugpy",
             "request": "launch",
