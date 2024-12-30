@@ -34,8 +34,6 @@ class GooglePhotoData(BasePhotoData):
 class LocalPhotoData(BasePhotoData):
     """Data class for local photo information."""
 
-    size: int
-
 
 @dataclass
 class GoogleAlbumData:

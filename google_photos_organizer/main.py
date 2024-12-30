@@ -3,10 +3,10 @@
 import argparse
 import logging
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Union
 from urllib.parse import unquote, urlparse
-import re
 
 from googleapiclient.discovery import Resource
 from tabulate import tabulate
@@ -21,9 +21,9 @@ from google_photos_organizer.database.models import (
 )
 from google_photos_organizer.utils.auth import authenticate_google_photos
 from google_photos_organizer.utils.file_utils import (
-    FileMetadata,
     get_file_metadata,
     get_image_dimensions,
+    is_media_file,
     normalize_filename,
 )
 
@@ -52,7 +52,7 @@ class GooglePhotosOrganizer:
 
     def get_album_title(self, path: str) -> str:
         """Convert directory path to album title using | as separator."""
-        relative_path = os.path.relpath(path, self.local_photos_dir)
+        relative_path = os.path.relpath(path)
         return relative_path.replace(os.sep, "|")
 
     def extract_filename(self, url: str) -> str:
@@ -157,7 +157,7 @@ class GooglePhotosOrganizer:
                             width=width,
                             height=height,
                             mime_type=item.get("mimeType"),
-                            path=item["id"]
+                            path=item["id"],
                         )
                     )
 
@@ -302,12 +302,10 @@ class GooglePhotosOrganizer:
 
             # Get photos in this album
             photos = self.db.get_photos_in_local_album(album_id)
-            for filename, creation_time, size, width, height, mime_type in photos:
-                size_mb = size / (1024 * 1024)
+            for filename, creation_time, width, height, mime_type in photos:
                 dimensions = f", Dimensions: {width}x{height}" if width and height else ""
                 print(
-                    f"  - {filename} (Created: {creation_time}, Size: {size_mb:.1f}MB"
-                    f"{dimensions}, Type: {mime_type})"
+                    f"  - {filename} (Created: {creation_time}" f"{dimensions}, Type: {mime_type})"
                 )
 
     def search_files(self, filename_pattern: str) -> None:
@@ -359,7 +357,11 @@ class GooglePhotosOrganizer:
             print(f"No photos found matching pattern: {filename_pattern}")
 
     def find_matching_photos(self, album_filter: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Find matching photos between local and Google Photos based on filename and dimensions."""
+        """Find matching photos between local and Google Photos based on filename and dimensions.
+
+        All local photos will be included in the results, even if there is no match in Google Photos.
+        For unmatched photos, the Google Photos fields will be left empty.
+        """
         results = []
 
         # Get local photos, filtered by album if specified
@@ -371,39 +373,41 @@ class GooglePhotosOrganizer:
             if idx % 100 == 0:
                 print(f"Processed {idx}/{total_photos} photos...")
 
+            result = {
+                "album_title": local_photo["album_title"],
+                "filename": local_photo["filename"],
+                "normalized_filename": local_photo["normalized_filename"],
+                "dimensions": f"{local_photo['width']}x{local_photo['height']}",
+                "google_filename": "",  # Default empty for unmatched photos
+                "google_id": "",  # Default empty for unmatched photos
+            }
+
             # Find Google photos with matching normalized filename
             google_matches = self.db.find_google_photos_by_filename(
                 local_photo["normalized_filename"]
             )
-            if not google_matches:
-                continue
 
-            # If multiple matches, try to match by dimensions
-            if len(google_matches) > 1:
-                print(
-                    f"Multiple matches found, checking dimensions {local_photo['width']}x{local_photo['height']}"
-                )
-                exact_matches = [
-                    gp
-                    for gp in google_matches
-                    if gp["width"] == local_photo["width"] and gp["height"] == local_photo["height"]
-                ]
-                if exact_matches:
-                    google_matches = exact_matches
+            if google_matches:
+                # If multiple matches, try to match by dimensions
+                if len(google_matches) > 1:
+                    print(
+                        f"Multiple matches found, checking dimensions {local_photo['width']}x{local_photo['height']}"
+                    )
+                    exact_matches = [
+                        gp
+                        for gp in google_matches
+                        if gp["width"] == local_photo["width"]
+                        and gp["height"] == local_photo["height"]
+                    ]
+                    if exact_matches:
+                        google_matches = exact_matches
 
-            # Take the first match (or only match)
-            google_photo = google_matches[0]
+                # Take the first match (or only match)
+                google_photo = google_matches[0]
+                result["google_filename"] = google_photo["filename"]
+                result["google_id"] = google_photo["id"]
 
-            results.append(
-                {
-                    "album_title": local_photo["album_title"],
-                    "filename": local_photo["filename"],
-                    "normalized_filename": local_photo["normalized_filename"],
-                    "dimensions": f"{local_photo['width']}x{local_photo['height']}",
-                    "google_filename": google_photo["filename"],
-                    "google_id": google_photo["id"],
-                }
-            )
+            results.append(result)
 
         return results
 
@@ -423,44 +427,51 @@ class GooglePhotosOrganizer:
 
     def scan_local_directory(self) -> None:
         """Scan local directory and store information in database."""
-        if not self.local_photos_dir:
-            print("No local photos directory specified")
-            return
-
         if not os.path.exists(self.local_photos_dir):
-            print(f"Directory does not exist: {self.local_photos_dir}")
+            logging.error("Local photos directory does not exist: %s", self.local_photos_dir)
             return
 
+        # Initialize only local tables
+        self.db.init_database(source=PhotoSource.LOCAL)
         print(f"\nScanning local directory: {self.local_photos_dir}")
-        total_files_processed = 0
-        total_albums_processed = 0
 
-        for root, _, files in os.walk(self.local_photos_dir):
-            # Get album info from directory
-            album_id = root
-            album_title = self.get_album_title(root)
-            album_stat = os.stat(root)
-            album_time = datetime.fromtimestamp(album_stat.st_mtime).isoformat()
+        # Track stats
+        total_files = 0
+        total_albums = 0
+        current_album_files = 0
 
-            # Store album metadata
-            self.store_local_album_metadata(album_id, album_title, root, album_time)
-            total_albums_processed += 1
+        for root, dirs, files in os.walk(self.local_photos_dir):
+            # Remove hidden directories
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
 
-            for filename in files:
+            # Create album for this directory if it has media files
+            media_files = [f for f in files if not f.startswith(".") and is_media_file(f)]
+
+            if not media_files:
+                continue
+
+            album_path = os.path.relpath(root, self.local_photos_dir)
+            album_title = self.get_album_title(album_path)
+            album_id = album_path
+            album_time = datetime.fromtimestamp(os.path.getctime(root)).isoformat()
+
+            self.store_local_album_metadata(album_id, album_title, album_path, album_time)
+            total_albums += 1
+            current_album_files = 0
+
+            # Process files in this directory
+            for filename in media_files:
+                filepath = os.path.join(root, filename)
                 try:
-                    filepath = os.path.join(root, filename)
                     metadata = get_file_metadata(filepath)
-                    if not metadata:
-                        continue
+                    photo_id = os.path.relpath(filepath, self.local_photos_dir)
 
-                    # Skip non-image files
-                    if not metadata.mime_type.startswith("image/"):
-                        continue
-
-                    width, height = get_image_dimensions(filepath)
-
-                    # Generate unique ID for photo
-                    photo_id = filepath
+                    # Get image dimensions if possible
+                    try:
+                        width, height = get_image_dimensions(filepath)
+                    except Exception as e:
+                        logging.debug("Could not get dimensions for %s: %s", filepath, e)
+                        width = height = None
 
                     photo_data = LocalPhotoData(
                         id=photo_id,
@@ -471,27 +482,24 @@ class GooglePhotosOrganizer:
                         width=width,
                         height=height,
                         mime_type=metadata.mime_type,
-                        size=metadata.size,
                     )
                     self.store_local_photo_metadata(photo_data)
-
-                    # Store album-photo relation
                     self.store_local_album_photo_relation(album_id, photo_id)
+                    total_files += 1
+                    current_album_files += 1
+                    print(
+                        f"\rProcessed Total: {total_files:5d} files across {total_albums:5d} albums with {current_album_files:5d} files in {album_title:50s} ",
+                        end="",
+                        flush=True,
+                    )
+                except Exception as e:
+                    logging.debug("Skipping file %s: %s", filepath, e)
 
-                    total_files_processed += 1
-                    if total_files_processed % 100 == 0:
-                        print(
-                            f"Processed {total_files_processed} files across "
-                            f"{total_albums_processed} albums."
-                        )
-
-                except Exception as e:  # pylint: disable=broad-except
-                    print(f"Error processing {filepath}: {e}")
-                    continue
-
-        print(
-            f"\nLocal directory scan complete. Processed {total_files_processed} files "
-            f"across {total_albums_processed} albums."
+        print()  # New line after progress
+        logging.info(
+            "Processed %d files across %d albums.",
+            total_files,
+            total_albums,
         )
 
 
@@ -517,8 +525,7 @@ def parse_arguments():
     scan_local_parser.add_argument(
         "--local-photos-dir",
         type=str,
-        help="Local photos directory",
-        default="."
+        help="Local photos directory (overrides global setting)",
     )
 
     # Search command

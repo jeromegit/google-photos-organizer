@@ -73,12 +73,17 @@ def test_store_local_photo(test_db_manager):
         width=100,
         height=100,
         path="/path/to/photo.jpg",
-        size=1024,
     )
 
     test_db_manager.store_photo(photo, PhotoSource.LOCAL)
-    count = test_db_manager.count_photos(PhotoSource.LOCAL)
-    assert count == 1
+
+    # Verify photo was stored
+    test_db_manager._execute("SELECT * FROM local_photos WHERE id = ?", ("test_id",))
+    result = test_db_manager.cursor.fetchone()
+
+    assert result is not None
+    assert result[1] == "test.jpg"  # filename
+    assert result[2] == "test_jpg"  # normalized_filename
 
 
 def test_store_google_album(test_db_manager):
@@ -147,7 +152,6 @@ def test_search_photos(test_db_manager):
         width=100,
         height=100,
         path="/path/to/photo.jpg",
-        size=1024,
     )
     test_db_manager.store_photo(local_photo, PhotoSource.LOCAL)
 

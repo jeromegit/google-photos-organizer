@@ -110,7 +110,7 @@ class DatabaseManager:
                         height INTEGER,
                         path TEXT NOT NULL
                     )
-                """
+                    """
                 )
 
                 self._execute(
@@ -119,9 +119,9 @@ class DatabaseManager:
                         id TEXT PRIMARY KEY,
                         title TEXT NOT NULL,
                         creation_time TEXT NOT NULL,
-                        path TEXT NOT NULL
+                        path TEXT
                     )
-                """
+                    """
                 )
 
                 self._execute(
@@ -129,28 +129,15 @@ class DatabaseManager:
                     CREATE TABLE IF NOT EXISTS {prefix}album_photos (
                         album_id TEXT NOT NULL,
                         photo_id TEXT NOT NULL,
-                        FOREIGN KEY (album_id) REFERENCES {prefix}albums (id),
-                        FOREIGN KEY (photo_id) REFERENCES {prefix}photos (id),
-                        PRIMARY KEY (album_id, photo_id)
+                        PRIMARY KEY (album_id, photo_id),
+                        FOREIGN KEY (album_id) REFERENCES {prefix}albums(id),
+                        FOREIGN KEY (photo_id) REFERENCES {prefix}photos(id)
                     )
-                """
-                )
-
-                self._execute(
-                    f"""
-                    CREATE INDEX IF NOT EXISTS idx_{prefix}filename
-                    ON {prefix}photos(filename)
-                """
-                )
-
-                self._execute(
-                    f"""
-                    CREATE INDEX IF NOT EXISTS idx_{prefix}normalized_filename
-                    ON {prefix}photos(normalized_filename)
-                """
+                    """
                 )
 
             self._commit()
+
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to initialize database: {e}") from e
 
@@ -517,16 +504,32 @@ class DatabaseManager:
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to get local albums: {e}") from e
 
-    def get_photos_in_local_album(self, album_id: str) -> List[Dict[str, Any]]:
-        """Get all photos in a local album."""
+    def get_photos_in_local_album(self, album_id: str) -> List[Tuple[str, str, int, int, str]]:
+        """Get all photos in a local album.
+
+        Args:
+            album_id: Album ID to get photos for
+
+        Returns:
+            List of tuples containing photo information
+        """
         try:
-            query = """
-                SELECT p.* FROM local_photos p
-                JOIN local_album_photos ap ON p.id = ap.photo_id
-                WHERE ap.album_id = ?
-            """
-            self._execute(query, (album_id,))
-            return [dict(row) for row in self.cursor.fetchall()]
+            self._execute(
+                """
+                SELECT
+                    lp.filename,
+                    lp.creation_time,
+                    lp.width,
+                    lp.height,
+                    lp.mime_type
+                FROM local_photos lp
+                JOIN local_album_photos lap ON lap.photo_id = lp.id
+                WHERE lap.album_id = ?
+                ORDER BY lp.creation_time
+                """,
+                (album_id,),
+            )
+            return self.cursor.fetchall()
         except sqlite3.Error as e:
             raise DatabaseError(f"Failed to get photos in local album: {e}") from e
 

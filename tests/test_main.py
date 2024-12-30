@@ -30,9 +30,7 @@ def test_main_help(capsys):
         assert cmd in help_output
 
 
-@pytest.mark.parametrize(
-    "command", ["scan-google", "search", "scan-local", "match", "all"]
-)
+@pytest.mark.parametrize("command", ["scan-google", "search", "scan-local", "match", "all"])
 def test_subcommand_help(command, capsys):
     """Test that each subcommand's help message is displayed correctly."""
     with pytest.raises(SystemExit) as exc_info:

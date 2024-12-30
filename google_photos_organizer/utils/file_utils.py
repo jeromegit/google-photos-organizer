@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class FileMetadata:
     """Class representing file metadata."""
+
     filename: str
     creation_time: str
     size: int

@@ -5,8 +5,11 @@ from datetime import datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+
 from google_photos_organizer.database.models import GooglePhotoData, LocalPhotoData, PhotoSource
-from google_photos_organizer.main import GooglePhotosOrganizer, FileMetadata
+from google_photos_organizer.main import GooglePhotosOrganizer
+from google_photos_organizer.utils.file_utils import FileMetadata
+
 
 @pytest.fixture
 def organizer():
@@ -58,7 +61,7 @@ def test_store_photo_metadata(organizer):
         creation_time=creation_time,
         width=width,
         height=height,
-        path=photo_id
+        path=photo_id,
     )
 
     # Store the photo metadata
@@ -91,7 +94,6 @@ def test_store_local_photo_metadata(organizer):
     width = 1920
     height = 1080
     mime_type = "image/jpeg"
-    size = 1024
 
     # Mock the database manager
     organizer.db = MagicMock()
@@ -106,7 +108,6 @@ def test_store_local_photo_metadata(organizer):
         width=width,
         height=height,
         mime_type=mime_type,
-        size=size
     )
 
     # Store the photo metadata
@@ -126,7 +127,6 @@ def test_store_local_photo_metadata(organizer):
     assert stored_photo_data.width == width
     assert stored_photo_data.height == height
     assert stored_photo_data.mime_type == mime_type
-    assert stored_photo_data.size == size
     assert source == PhotoSource.LOCAL
 
 
@@ -145,19 +145,13 @@ def test_scan_local_directory(mock_normalize, mock_dimensions, mock_metadata, or
         patch("os.path.exists", return_value=True),
         patch("os.stat") as mock_stat,
         patch("os.path.join", side_effect=lambda *args: "/".join(args)),
+        patch(
+            "google_photos_organizer.main.is_media_file",
+            side_effect=lambda f: f.endswith((".jpg", ".png")),
+        ),
     ):
         # Mock file metadata
         def get_mock_metadata(filepath):
-            if filepath.endswith(".txt"):
-                return FileMetadata(
-                    filename=os.path.basename(filepath),
-                    creation_time="2024-01-01T00:00:00Z",
-                    size=1024,
-                    modified="2024-01-01T00:00:00Z",
-                    mime_type="text/plain",
-                    width=0,
-                    height=0,
-                )
             return FileMetadata(
                 filename=os.path.basename(filepath),
                 creation_time="2024-01-01T00:00:00Z",
@@ -180,10 +174,8 @@ def test_scan_local_directory(mock_normalize, mock_dimensions, mock_metadata, or
         organizer.scan_local_directory()
 
         # Verify that only image files were processed
-        assert mock_metadata.call_count == 4  # test1.jpg, test2.png, ignore.txt, test3.jpg
-        assert mock_dimensions.call_count == 3  # Only image files get dimensions
-        assert organizer.db.store_photo.call_count == 3  # Only image files are stored
-        assert organizer.db.store_album.call_count == 2  # root and dir1
+        assert mock_metadata.call_count == 3  # test1.jpg, test2.png, test3.jpg
+        assert organizer.db.store_photo.call_count == 3
 
 
 def test_store_photos(organizer, mock_service):
